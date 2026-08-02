@@ -70,11 +70,13 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
 ];
 
 export function AppLayout() {
-  const { user, signOut, can, hasRole, activeSchoolId, setActiveSchool } = useAuth();
+  const { user, signOut, can, hasRole, activeSchoolId, setActiveSchool, isStandalone } = useAuth();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const isPlatformStaff = hasRole('SUPER_ADMIN');
+  // A standalone installation has no tenants to administer, so platform staff
+  // are a SaaS-only concept there.
+  const isPlatformStaff = hasRole('SUPER_ADMIN') && !isStandalone;
 
   // Only platform staff can list tenants, and only they need the switcher.
   const schools = useQuery({
@@ -91,6 +93,8 @@ export function AppLayout() {
   const visibleSections = NAV.map((section) => ({
     ...section,
     items: section.items.filter((item) => {
+      // Platform administration does not exist on a standalone installation.
+      if (isStandalone && item.to === '/platform') return false;
       // A super admin with no school selected can only reach platform routes;
       // every other page would fail server-side for want of a tenant.
       if (isPlatformStaff && !activeSchoolId && item.to !== '/platform') return false;

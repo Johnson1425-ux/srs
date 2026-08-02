@@ -42,7 +42,13 @@ export type UserProfile = Awaited<ReturnType<typeof getProfile>>;
 export async function getProfile(userId: string) {
   const user = await prisma.user.findUnique({ where: { id: userId }, select: userProfileSelect });
   if (!user) throw notFound('User');
-  return { ...user, permissions: permissionsForRole(user.role) };
+  return {
+    ...user,
+    permissions: permissionsForRole(user.role),
+    // Lets the UI drop subscription and platform surfaces that mean nothing
+    // on an installation the school owns outright.
+    deploymentMode: env.DEPLOYMENT_MODE,
+  };
 }
 
 async function resolveUserForLogin(email: string, schoolCode?: string) {

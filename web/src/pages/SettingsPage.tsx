@@ -43,7 +43,7 @@ interface AuditRow {
 }
 
 export function SettingsPage() {
-  const { can, user } = useAuth();
+  const { can, user, isStandalone } = useAuth();
   const queryClient = useQueryClient();
 
   const [tab, setTab] = useState<'profile' | 'security' | 'audit'>('profile');
@@ -139,7 +139,7 @@ export function SettingsPage() {
           <ErrorNote error={school.error} />
         ) : (
           <div className="grid gap-6 lg:grid-cols-3">
-            <div className="lg:col-span-2">
+            <div className={isStandalone ? 'lg:col-span-3' : 'lg:col-span-2'}>
               <Card title="School profile">
                 {saved && (
                   <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -208,6 +208,8 @@ export function SettingsPage() {
               </Card>
             </div>
 
+            {/* Plans and limits mean nothing to a school that owns its copy. */}
+            {!isStandalone && (
             <Card title="Subscription">
               <dl className="space-y-3 text-sm">
                 <div>
@@ -229,6 +231,7 @@ export function SettingsPage() {
                 Contact your provider to change plan or raise these limits.
               </p>
             </Card>
+            )}
           </div>
         ))}
 

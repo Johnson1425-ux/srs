@@ -1,5 +1,6 @@
 import { type Gender, Role, StudentStatus } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
+import { isSaas } from '../../config/env.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { nextAdmissionNumber } from '../../lib/sequence.js';
 import { hashPassword, randomToken } from '../../lib/tokens.js';
@@ -84,18 +85,21 @@ export async function admitStudent(schoolId: string, input: AdmissionInput) {
     }
   }
 
-  // Enforce the tenant's student cap from its subscription plan.
-  const school = await prisma.school.findUniqueOrThrow({
-    where: { id: schoolId },
-    select: { maxStudents: true, code: true },
-  });
-  const activeCount = await prisma.student.count({
-    where: { schoolId, status: StudentStatus.ACTIVE },
-  });
-  if (activeCount >= school.maxStudents) {
-    throw conflict(
-      `This school has reached its plan limit of ${school.maxStudents} active students.`,
-    );
+  // Enforce the tenant's student cap from its subscription plan. A standalone
+  // installation is owned outright, so there is no plan to cap it against.
+  if (isSaas) {
+    const school = await prisma.school.findUniqueOrThrow({
+      where: { id: schoolId },
+      select: { maxStudents: true },
+    });
+    const activeCount = await prisma.student.count({
+      where: { schoolId, status: StudentStatus.ACTIVE },
+    });
+    if (activeCount >= school.maxStudents) {
+      throw conflict(
+        `This school has reached its plan limit of ${school.maxStudents} active students.`,
+      );
+    }
   }
 
   const credentials: Array<{ role: string; name: string; email: string; password: string }> = [];

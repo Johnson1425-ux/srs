@@ -3,6 +3,20 @@ import { z } from 'zod';
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+
+  /**
+   * How this installation is sold and run.
+   *
+   * - `saas`       — one deployment serving many schools, with platform
+   *                  administration, subscription plans and their limits.
+   * - `standalone` — one school that owns its installation outright. Platform
+   *                  administration is not mounted at all and plan limits do
+   *                  not apply, because there is no plan.
+   *
+   * The data model is identical either way; only these behaviours differ.
+   */
+  DEPLOYMENT_MODE: z.enum(['saas', 'standalone']).default('saas'),
+
   PORT: z.coerce.number().int().positive().default(4000),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   TEST_DATABASE_URL: z.string().optional(),
@@ -42,3 +56,8 @@ export const env = parsed.data;
 
 export const isProduction = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
+
+/** A single school running its own installation — no plans, no platform admin. */
+export const isStandalone = env.DEPLOYMENT_MODE === 'standalone';
+/** One deployment serving many schools under subscription. */
+export const isSaas = !isStandalone;

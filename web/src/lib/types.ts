@@ -23,6 +23,8 @@ export interface School {
   motto?: string | null;
 }
 
+export type DeploymentMode = 'saas' | 'standalone';
+
 export interface Profile {
   id: string;
   email: string;
@@ -34,6 +36,8 @@ export interface Profile {
   schoolId: string | null;
   mustChangePassword: boolean;
   permissions: Permission[];
+  /** Whether this installation is multi-school SaaS or a single owned copy. */
+  deploymentMode: DeploymentMode;
   school: School | null;
   staff: { id: string; staffNumber: string; staffType: string } | null;
   student: { id: string; admissionNumber: string } | null;

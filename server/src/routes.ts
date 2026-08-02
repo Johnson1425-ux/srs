@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { isSaas } from './config/env.js';
 import { authenticate, requireSchool } from './middleware/auth.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { schoolRouter } from './modules/schools/school.routes.js';
@@ -33,8 +34,12 @@ apiRouter.use(authenticate);
 // Self-service portals for students and parents (scoped to the caller).
 apiRouter.use('/portal', portalRouter);
 
-// Platform (multi-school SaaS) administration.
-apiRouter.use('/platform', platformRouter);
+// Platform (multi-school SaaS) administration. A standalone installation has
+// no tenants to manage and no subscription to bill, so it is not mounted at all
+// — the routes simply do not exist rather than being merely hidden.
+if (isSaas) {
+  apiRouter.use('/platform', platformRouter);
+}
 
 // School-scoped resources.
 apiRouter.use(requireSchool);

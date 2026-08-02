@@ -252,6 +252,45 @@ npm test
 
 ---
 
+## Deployment modes
+
+The same codebase is sold two ways, switched by one environment variable:
+
+```
+DEPLOYMENT_MODE=saas        # default
+DEPLOYMENT_MODE=standalone
+```
+
+| | `saas` | `standalone` |
+| --- | --- | --- |
+| Schools per deployment | many | one |
+| Platform administration (`/platform`) | mounted | **not mounted** — the routes do not exist |
+| Subscription plans and student caps | enforced | not applied |
+| Subscription card in Settings | shown | hidden |
+| First school created by | `POST /platform/schools` | `npm run bootstrap` |
+
+The data model is identical either way — a standalone install is simply a
+tenant of one, so a school can be migrated between the two without a schema
+change. Only the behaviours above differ, which is why this is a flag rather
+than a fork.
+
+### Setting up a standalone installation
+
+```bash
+DEPLOYMENT_MODE=standalone npm run bootstrap --workspace=server
+```
+
+Prompts for the school name, code and first administrator, then creates the
+school, an `ADMIN` account with a one-time password, and a default grading
+scale. Values can be supplied as environment variables
+(`SCHOOL_NAME`, `SCHOOL_CODE`, `ADMIN_EMAIL`, `ADMIN_FIRST_NAME`,
+`ADMIN_LAST_NAME`, `ADMIN_PASSWORD`) for unattended installs. It refuses to run
+twice unless passed `--force`, since a standalone install should hold exactly
+one school.
+
+Standalone deployments should not have a `SUPER_ADMIN` account at all — the
+school's own administrator is the highest role.
+
 ## Deployment
 
 `docker compose up --build` brings up PostgreSQL, Redis, the API and an nginx

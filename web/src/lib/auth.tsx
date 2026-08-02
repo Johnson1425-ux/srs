@@ -22,6 +22,8 @@ interface AuthState {
   /** The school a super admin is working in; null for everyone else. */
   activeSchoolId: string | null;
   setActiveSchool: (schoolId: string | null) => void;
+  /** True when this installation serves a single school that owns it. */
+  isStandalone: boolean;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -115,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasRole: (...roles) => (user ? roles.includes(user.role) : false),
       activeSchoolId,
       setActiveSchool,
+      isStandalone: user?.deploymentMode === 'standalone',
     }),
     [user, loading, signIn, signOut, loadProfile, activeSchoolId, setActiveSchool],
   );
