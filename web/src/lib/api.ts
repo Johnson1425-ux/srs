@@ -3,6 +3,8 @@ const API_BASE = `${import.meta.env.VITE_API_URL ?? ''}/api/v1`;
 const ACCESS_KEY = 'sms.accessToken';
 const REFRESH_KEY = 'sms.refreshToken';
 
+const SCHOOL_KEY = 'sms.activeSchoolId';
+
 export const tokenStore = {
   access: (): string | null => localStorage.getItem(ACCESS_KEY),
   refresh: (): string | null => localStorage.getItem(REFRESH_KEY),
@@ -13,6 +15,24 @@ export const tokenStore = {
   clear(): void {
     localStorage.removeItem(ACCESS_KEY);
     localStorage.removeItem(REFRESH_KEY);
+  },
+};
+
+/**
+ * The school a super admin is currently working in.
+ *
+ * Platform staff belong to no school, so school-scoped routes have no tenant to
+ * infer. Sending it as `X-School-Id` lets them work inside a chosen tenant. The
+ * server only honours the header for SUPER_ADMIN, so a stale value in any other
+ * account's storage is inert.
+ */
+export const schoolContext = {
+  get: (): string | null => localStorage.getItem(SCHOOL_KEY),
+  set(schoolId: string): void {
+    localStorage.setItem(SCHOOL_KEY, schoolId);
+  },
+  clear(): void {
+    localStorage.removeItem(SCHOOL_KEY);
   },
 };
 
@@ -86,6 +106,9 @@ async function send(path: string, options: RequestOptions, retry = true): Promis
   const token = tokenStore.access();
   const headers = new Headers(options.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
+
+  const activeSchool = schoolContext.get();
+  if (activeSchool) headers.set('X-School-Id', activeSchool);
   if (options.body !== undefined && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }

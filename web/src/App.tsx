@@ -61,10 +61,16 @@ function RequirePermission({
   return <>{children}</>;
 }
 
-/** Families land on the portal; staff land on the dashboard. */
+/**
+ * Families land on the portal, school staff on the dashboard.
+ *
+ * A super admin belongs to no school, so the dashboard has no tenant to load
+ * until they pick one — send them to platform administration instead.
+ */
 function HomeRedirect() {
-  const { hasRole } = useAuth();
+  const { hasRole, activeSchoolId } = useAuth();
   if (hasRole('PARENT', 'STUDENT')) return <Navigate to="/portal" replace />;
+  if (hasRole('SUPER_ADMIN') && !activeSchoolId) return <Navigate to="/platform" replace />;
   return <DashboardPage />;
 }
 

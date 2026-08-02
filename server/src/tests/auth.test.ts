@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { Role } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
+import { hashPassword } from '../lib/tokens.js';
 import {
   type Fixture,
   TEST_PASSWORD,
@@ -251,6 +253,81 @@ describe('role-based permissions', () => {
     const token = await login(fixture.users.admin!.email);
     const res = await request(app).get('/api/v1/platform/schools').set(authed(token));
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * Platform staff belong to no school, so school-scoped routes have no tenant to
+ * infer until they name one. The UI drives this with a school switcher; these
+ * tests pin down the contract it depends on.
+ */
+describe('super admin school context', () => {
+  let fixture: Fixture;
+  let token: string;
+
+  beforeAll(async () => {
+    fixture = await createSchoolFixture();
+    const passwordHash = await hashPassword(TEST_PASSWORD);
+    await prisma.user.create({
+      data: {
+        schoolId: null,
+        email: `root@${fixture.school.code.toLowerCase()}.test`,
+        firstName: 'Platform',
+        lastName: 'Admin',
+        role: Role.SUPER_ADMIN,
+        passwordHash,
+      },
+    });
+    token = await login(`root@${fixture.school.code.toLowerCase()}.test`);
+  });
+
+  afterAll(async () => {
+    await prisma.user.deleteMany({
+      where: { email: `root@${fixture.school.code.toLowerCase()}.test` },
+    });
+    await destroyFixture(fixture);
+  });
+
+  it('reaches platform routes without naming a school', async () => {
+    const res = await request(app).get('/api/v1/platform/schools').set(authed(token));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses school-scoped routes until a school is chosen', async () => {
+    const res = await request(app).get('/api/v1/students').set(authed(token));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.message).toContain('X-School-Id');
+  });
+
+  it('works inside a school once the header names one', async () => {
+    const res = await request(app)
+      .get('/api/v1/students')
+      .set(authed(token))
+      .set('X-School-Id', fixture.school.id);
+
+    expect(res.status).toBe(200);
+    const ids = res.body.data.map((s: { id: string }) => s.id);
+    expect(ids).toEqual(expect.arrayContaining(fixture.students.map((s) => s.id)));
+  });
+
+  it('ignores the header for anyone who is not platform staff', async () => {
+    const other = await createSchoolFixture();
+    const schoolToken = await login(fixture.users.admin!.email);
+
+    // A school admin pointing at another tenant stays pinned to their own.
+    const res = await request(app)
+      .get('/api/v1/students?pageSize=100')
+      .set(authed(schoolToken))
+      .set('X-School-Id', other.school.id);
+
+    expect(res.status).toBe(200);
+    const ids = res.body.data.map((s: { id: string }) => s.id);
+    for (const student of other.students) {
+      expect(ids).not.toContain(student.id);
+    }
+
+    await destroyFixture(other);
   });
 });
 

@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { get } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { initials, titleCase } from '../lib/format';
 import type { Permission, Role } from '../lib/types';
@@ -68,13 +70,30 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
 ];
 
 export function AppLayout() {
-  const { user, signOut, can, hasRole } = useAuth();
+  const { user, signOut, can, hasRole, activeSchoolId, setActiveSchool } = useAuth();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  const isPlatformStaff = hasRole('SUPER_ADMIN');
+
+  // Only platform staff can list tenants, and only they need the switcher.
+  const schools = useQuery({
+    queryKey: ['platform', 'schools', 'switcher'],
+    queryFn: () =>
+      get<{ data: Array<{ id: string; name: string; code: string }> }>(
+        '/platform/schools?pageSize=100',
+      ),
+    enabled: isPlatformStaff,
+  });
+
+  const activeSchool = schools.data?.data.find((s) => s.id === activeSchoolId);
 
   const visibleSections = NAV.map((section) => ({
     ...section,
     items: section.items.filter((item) => {
+      // A super admin with no school selected can only reach platform routes;
+      // every other page would fail server-side for want of a tenant.
+      if (isPlatformStaff && !activeSchoolId && item.to !== '/platform') return false;
       if (item.roles && hasRole(...item.roles)) return true;
       if (item.permissions && can(...item.permissions)) return true;
       return false;
@@ -109,15 +128,51 @@ export function AppLayout() {
         <div className="flex h-full flex-col">
           <div className="hidden items-center gap-3 border-b border-slate-200 px-5 py-4 lg:flex">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">
-              {user?.school?.code?.slice(0, 2) ?? 'SM'}
+              {(activeSchool?.code ?? user?.school?.code)?.slice(0, 2) ?? 'SM'}
             </div>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900">
-                {user?.school?.name ?? 'Platform'}
+                {activeSchool?.name ?? user?.school?.name ?? 'Platform'}
               </p>
-              <p className="truncate text-xs text-slate-500">{user?.school?.code ?? 'Super admin'}</p>
+              <p className="truncate text-xs text-slate-500">
+                {activeSchool?.code ?? user?.school?.code ?? 'Super admin'}
+              </p>
             </div>
           </div>
+
+          {isPlatformStaff && (
+            <div className="border-b border-slate-200 px-5 py-3">
+              <label
+                className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-400"
+                htmlFor="school-switcher"
+              >
+                Working in
+              </label>
+              <select
+                id="school-switcher"
+                className="input py-1.5 text-sm"
+                value={activeSchoolId ?? ''}
+                onChange={(e) => {
+                  const next = e.target.value || null;
+                  setActiveSchool(next);
+                  // Leaving a school has nowhere school-scoped to land.
+                  navigate(next ? '/' : '/platform');
+                }}
+              >
+                <option value="">— No school selected —</option>
+                {schools.data?.data.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.code})
+                  </option>
+                ))}
+              </select>
+              {!activeSchoolId && (
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Pick a school to open its records.
+                </p>
+              )}
+            </div>
+          )}
 
           <nav className="flex-1 overflow-y-auto px-3 py-4">
             {visibleSections.map((section) => (

@@ -8,7 +8,7 @@ import {
   useState,
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { get, post, tokenStore } from './api';
+import { get, post, schoolContext, tokenStore } from './api';
 import type { Permission, Profile, Role } from './types';
 
 interface AuthState {
@@ -19,6 +19,9 @@ interface AuthState {
   refreshProfile: () => Promise<void>;
   can: (...permissions: Permission[]) => boolean;
   hasRole: (...roles: Role[]) => boolean;
+  /** The school a super admin is working in; null for everyone else. */
+  activeSchoolId: string | null;
+  setActiveSchool: (schoolId: string | null) => void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -26,6 +29,7 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activeSchoolId, setActiveSchoolId] = useState<string | null>(schoolContext.get());
   const queryClient = useQueryClient();
 
   const loadProfile = useCallback(async () => {
@@ -78,9 +82,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Signing out locally matters more than the server acknowledging it.
     }
     tokenStore.clear();
+    schoolContext.clear();
+    setActiveSchoolId(null);
     setUser(null);
     queryClient.clear();
   }, [queryClient]);
+
+  /**
+   * Switching school must drop every cached query — the previous tenant's
+   * students and invoices are not this tenant's.
+   */
+  const setActiveSchool = useCallback(
+    (schoolId: string | null) => {
+      if (schoolId) schoolContext.set(schoolId);
+      else schoolContext.clear();
+      setActiveSchoolId(schoolId);
+      queryClient.clear();
+    },
+    [queryClient],
+  );
 
   const value = useMemo<AuthState>(
     () => ({
@@ -93,8 +113,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user?.role === 'SUPER_ADMIN' ||
         permissions.some((p) => user?.permissions.includes(p) ?? false),
       hasRole: (...roles) => (user ? roles.includes(user.role) : false),
+      activeSchoolId,
+      setActiveSchool,
     }),
-    [user, loading, signIn, signOut, loadProfile],
+    [user, loading, signIn, signOut, loadProfile, activeSchoolId, setActiveSchool],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

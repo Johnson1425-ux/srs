@@ -220,6 +220,12 @@ All demo accounts use the password **`Passw0rd!`**
 Seeding is idempotent: it resets the demo school and rebuilds it, leaving any
 other tenant untouched.
 
+**Signing in as the super admin** lands you on platform administration rather
+than a school dashboard, because platform staff belong to no school. Use the
+**Working in** switcher in the sidebar to open a tenant's records — that sends
+`X-School-Id` on every request, which the API honours only for `SUPER_ADMIN`.
+Clearing the selection returns you to the platform view.
+
 ---
 
 ## Testing
