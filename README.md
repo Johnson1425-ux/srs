@@ -296,10 +296,46 @@ school's own administrator is the highest role.
 `docker compose up --build` brings up PostgreSQL, Redis, the API and an nginx
 container serving the built SPA and proxying `/api`.
 
-For production:
+### Vercel (frontend) + Render (backend)
+
+`web/vercel.json` is committed and covers the SPA fallback, security headers and
+asset caching — the jobs nginx does in the self-hosted setup.
+
+**Vercel** — Root Directory `web`, environment variable
+`VITE_API_URL=https://your-api.onrender.com`.
+
+**Render** — Root Directory `server`, build
+`npm ci && npx prisma generate && npm run build`, start `node dist/index.js`,
+pre-deploy `npx prisma migrate deploy`. Set `DATABASE_URL`, both `JWT_*` secrets
+and `CORS_ORIGIN=https://your-app.vercel.app`. Leave `PORT` alone — Render
+injects it.
+
+Prefer Render's native Node runtime over the Dockerfile; both work, but the
+native runtime needs no container build.
+
+#### Optional: proxy `/api` through Vercel
+
+Two annoyances come with the split-origin setup above: preview deployments get
+unique URLs that a fixed `CORS_ORIGIN` will reject, and `VITE_API_URL` is
+inlined at build time so changing it means rebuilding the frontend.
+
+Both disappear if Vercel proxies the API instead. Add this **above** the
+existing catch-all in `web/vercel.json` — order matters, or the catch-all
+swallows it — and replace the host with your own:
+
+```json
+{ "source": "/api/:path*", "destination": "https://your-api.onrender.com/api/:path*" }
+```
+
+Then **leave `VITE_API_URL` unset**. The client falls back to same-origin
+`/api/v1`, so there is no CORS at all and nothing is baked into the bundle.
+This is not the default only because a placeholder URL committed to the repo
+would break every deployment that forgot to edit it.
+
+### Production notes
 
 1. Terminate TLS at a load balancer or with certbot in front of nginx; the app
-   assumes HTTPS everywhere (PRD section 6).
+   assumes HTTPS everywhere (PRD section 6). Vercel and Render do this for you.
 2. Set strong `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` values. Rotating them
    invalidates all sessions.
 3. Configure `SMS_GATEWAY_*` and `SMTP_*`. **Left blank, messages are recorded in

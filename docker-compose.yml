@@ -55,7 +55,8 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
-    # Apply pending migrations before serving traffic.
+    # Apply pending migrations before serving traffic. This needs the prisma
+    # CLI present in the production image — see the note in server/Dockerfile.
     command: sh -c "npx prisma migrate deploy && node dist/index.js"
     expose:
       - '4000'

@@ -26,6 +26,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl curl \
 
 COPY package*.json ./
 COPY server/package.json ./server/
+
+# `prisma` is a runtime dependency here, not just a build tool: the container
+# runs `prisma migrate deploy` on start, so pruning dev dependencies must not
+# take the CLI with it. Moving it back to devDependencies breaks startup.
 RUN npm ci --workspace=server --include-workspace-root --omit=dev
 
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
