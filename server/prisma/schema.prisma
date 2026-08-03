@@ -1029,6 +1029,14 @@ model PayrollRun {
   netTotal   Decimal @db.Decimal(14, 2) @default(0)
   createdAt DateTime @default(now())
 
+  // Who signed the run off, and when it reached the bank. A draft is a
+  // proposal: it posts nothing to the ledger until it is approved.
+  preparedById String?
+  approvedById String?
+  approvedAt   DateTime?
+  paidAt       DateTime?
+  paymentNote  String?
+
   payslips Payslip[]
 
   @@unique([schoolId, period])

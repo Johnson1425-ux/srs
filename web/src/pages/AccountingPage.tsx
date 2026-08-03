@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
-import { get, post, qs } from '../lib/api';
+import { del, get, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { date, isoDate, money } from '../lib/format';
+import { date, dateTime, isoDate, money } from '../lib/format';
 import {
+  Badge,
   Card,
   EmptyState,
   ErrorNote,
@@ -38,7 +39,58 @@ interface PayrollRun {
   status: string;
   grossTotal: string;
   netTotal: string;
+  approvedAt: string | null;
+  paidAt: string | null;
   _count: { payslips: number };
+}
+
+interface PayslipRow {
+  id: string;
+  basicSalary: string;
+  allowances: string;
+  grossPay: string;
+  payeTax: string;
+  nssf: string;
+  otherDeductions: string;
+  netPay: string;
+  staff: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    staffNumber: string;
+    jobTitle: string | null;
+    bankName: string | null;
+    bankAccount: string | null;
+  };
+}
+
+interface RunDetail extends PayrollRun {
+  payslips: PayslipRow[];
+}
+
+interface PayslipDetail {
+  school: { name: string; address: string | null; phone: string | null; currency: string };
+  period: string;
+  status: string;
+  paidAt: string | null;
+  staff: {
+    firstName: string;
+    lastName: string;
+    staffNumber: string;
+    jobTitle: string | null;
+    bankName: string | null;
+    bankAccount: string | null;
+    department: { name: string } | null;
+  };
+  earnings: Array<{ label: string; amount: string }>;
+  deductions: Array<{ label: string; amount: string }>;
+  totals: {
+    gross: string;
+    grossFormatted: string;
+    totalDeductions: string;
+    net: string;
+    netFormatted: string;
+  };
 }
 
 interface LedgerForm {
@@ -62,6 +114,8 @@ export function AccountingPage() {
   const [to, setTo] = useState(isoDate());
   const [showEntry, setShowEntry] = useState(false);
   const [showPayroll, setShowPayroll] = useState(false);
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [openPayslipId, setOpenPayslipId] = useState<string | null>(null);
 
   const range = qs({ from, to });
 
@@ -101,6 +155,42 @@ export function AccountingPage() {
       void queryClient.invalidateQueries({ queryKey: ['accounting'] });
       setShowEntry(false);
       entryForm.reset({ entryType: 'EXPENSE', entryDate: isoDate() });
+    },
+  });
+
+  const runDetail = useQuery({
+    queryKey: ['payroll', openRunId],
+    queryFn: () => get<RunDetail>(`/accounting/payroll/${openRunId}`),
+    enabled: Boolean(openRunId),
+  });
+
+  const payslipDetail = useQuery({
+    queryKey: ['payroll', openRunId, 'payslip', openPayslipId],
+    queryFn: () =>
+      get<PayslipDetail>(`/accounting/payroll/${openRunId}/payslips/${openPayslipId}`),
+    enabled: Boolean(openRunId && openPayslipId),
+  });
+
+  const refreshPayroll = () => {
+    void queryClient.invalidateQueries({ queryKey: ['payroll'] });
+    void queryClient.invalidateQueries({ queryKey: ['accounting'] });
+  };
+
+  const approveRun = useMutation({
+    mutationFn: (runId: string) => post(`/accounting/payroll/${runId}/approve`),
+    onSuccess: refreshPayroll,
+  });
+
+  const markPaid = useMutation({
+    mutationFn: (runId: string) => post(`/accounting/payroll/${runId}/mark-paid`, {}),
+    onSuccess: refreshPayroll,
+  });
+
+  const discardDraft = useMutation({
+    mutationFn: (runId: string) => del(`/accounting/payroll/${runId}`),
+    onSuccess: () => {
+      refreshPayroll();
+      setOpenRunId(null);
     },
   });
 
@@ -313,6 +403,7 @@ export function AccountingPage() {
                     <th className="text-right">Gross</th>
                     <th className="text-right">Net</th>
                     <th>Status</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -322,7 +413,21 @@ export function AccountingPage() {
                       <td>{run._count.payslips}</td>
                       <td className="text-right">{money(run.grossTotal, currency)}</td>
                       <td className="text-right font-medium">{money(run.netTotal, currency)}</td>
-                      <td>{run.status}</td>
+                      <td>
+                        <Badge status={run.status} />
+                        {run.paidAt && (
+                          <span className="ml-2 text-xs text-slate-400">{date(run.paidAt)}</span>
+                        )}
+                      </td>
+                      <td className="text-right">
+                        <button
+                          type="button"
+                          className="text-sm text-brand-700 hover:underline"
+                          onClick={() => setOpenRunId(run.id)}
+                        >
+                          Open
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -330,6 +435,251 @@ export function AccountingPage() {
             </TableWrap>
           )}
         </Card>
+      )}
+
+      {openRunId && !openPayslipId && (
+        <Modal title="Payroll run" onClose={() => setOpenRunId(null)} wide>
+          {runDetail.isLoading ? (
+            <Spinner />
+          ) : runDetail.error ? (
+            <ErrorNote error={runDetail.error} />
+          ) : runDetail.data ? (
+            <>
+              {(approveRun.error ?? markPaid.error ?? discardDraft.error) != null && (
+                <div className="mb-4">
+                  <ErrorNote error={approveRun.error ?? markPaid.error ?? discardDraft.error} />
+                </div>
+              )}
+
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-lg font-semibold text-slate-900">{runDetail.data.period}</p>
+                  <p className="text-sm text-slate-500">
+                    {runDetail.data.payslips.length} payslip(s) ·{' '}
+                    {money(runDetail.data.netTotal, currency)} net
+                  </p>
+                </div>
+                <Badge status={runDetail.data.status} />
+              </div>
+
+              <ol className="mb-5 flex flex-wrap gap-2 text-xs">
+                {(['DRAFT', 'APPROVED', 'PAID'] as const).map((stage, i) => {
+                  const order = ['DRAFT', 'APPROVED', 'PAID'];
+                  const reached = order.indexOf(runDetail.data!.status) >= i;
+                  return (
+                    <li
+                      key={stage}
+                      className={`rounded-md px-2.5 py-1 ${
+                        reached ? 'bg-brand-100 text-brand-800' : 'bg-slate-100 text-slate-400'
+                      }`}
+                    >
+                      {i + 1}. {stage.charAt(0) + stage.slice(1).toLowerCase()}
+                    </li>
+                  );
+                })}
+              </ol>
+
+              {runDetail.data.status === 'DRAFT' && (
+                <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  This is a draft. Nothing has been posted to the ledger yet — approving it books
+                  the salary expense.
+                </p>
+              )}
+
+              <TableWrap>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Staff</th>
+                      <th className="text-right">Gross</th>
+                      <th className="text-right">NSSF</th>
+                      <th className="text-right">PAYE</th>
+                      <th className="text-right">Net</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {runDetail.data.payslips.map((p) => (
+                      <tr key={p.id}>
+                        <td>
+                          {p.staff.firstName} {p.staff.lastName}
+                          <span className="block text-xs text-slate-400">
+                            {p.staff.staffNumber}
+                            {p.staff.jobTitle ? ` · ${p.staff.jobTitle}` : ''}
+                          </span>
+                        </td>
+                        <td className="text-right">{money(p.grossPay, currency)}</td>
+                        <td className="text-right text-slate-500">{money(p.nssf, currency)}</td>
+                        <td className="text-right text-slate-500">{money(p.payeTax, currency)}</td>
+                        <td className="text-right font-medium">{money(p.netPay, currency)}</td>
+                        <td className="text-right">
+                          <button
+                            type="button"
+                            className="text-sm text-brand-700 hover:underline"
+                            onClick={() => setOpenPayslipId(p.id)}
+                          >
+                            Payslip
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableWrap>
+
+              {can('payroll:manage') && (
+                <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
+                  {runDetail.data.status === 'DRAFT' && (
+                    <>
+                      <button
+                        type="button"
+                        className="btn-danger"
+                        disabled={discardDraft.isPending}
+                        onClick={() => discardDraft.mutate(runDetail.data!.id)}
+                      >
+                        Discard draft
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        disabled={approveRun.isPending}
+                        onClick={() => approveRun.mutate(runDetail.data!.id)}
+                      >
+                        {approveRun.isPending ? 'Approving…' : 'Approve run'}
+                      </button>
+                    </>
+                  )}
+                  {runDetail.data.status === 'APPROVED' && (
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      disabled={markPaid.isPending}
+                      onClick={() => markPaid.mutate(runDetail.data!.id)}
+                    >
+                      {markPaid.isPending ? 'Saving…' : 'Mark as paid'}
+                    </button>
+                  )}
+                  {runDetail.data.status === 'PAID' && (
+                    <p className="text-sm text-slate-500">
+                      Paid {runDetail.data.paidAt ? dateTime(runDetail.data.paidAt) : ''}
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          ) : null}
+        </Modal>
+      )}
+
+      {openPayslipId && (
+        <Modal title="Payslip" onClose={() => setOpenPayslipId(null)}>
+          {payslipDetail.isLoading ? (
+            <Spinner />
+          ) : payslipDetail.error ? (
+            <ErrorNote error={payslipDetail.error} />
+          ) : payslipDetail.data ? (
+            <>
+              <div className="space-y-4 text-sm">
+                <div className="border-b border-slate-200 pb-4 text-center">
+                  <h3 className="text-lg font-semibold text-slate-900">
+                    {payslipDetail.data.school.name}
+                  </h3>
+                  {payslipDetail.data.school.address && (
+                    <p className="text-xs text-slate-500">{payslipDetail.data.school.address}</p>
+                  )}
+                  <p className="mt-3 font-medium uppercase tracking-wide text-slate-700">
+                    Payslip — {payslipDetail.data.period}
+                  </p>
+                  {payslipDetail.data.status !== 'PAID' && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      {payslipDetail.data.status === 'DRAFT'
+                        ? 'Draft — not yet approved'
+                        : 'Approved — payment pending'}
+                    </p>
+                  )}
+                </div>
+
+                <dl className="grid grid-cols-2 gap-3">
+                  <Cell
+                    label="Employee"
+                    value={`${payslipDetail.data.staff.firstName} ${payslipDetail.data.staff.lastName}`}
+                  />
+                  <Cell label="Staff number" value={payslipDetail.data.staff.staffNumber} mono />
+                  <Cell label="Position" value={payslipDetail.data.staff.jobTitle ?? '—'} />
+                  <Cell
+                    label="Department"
+                    value={payslipDetail.data.staff.department?.name ?? '—'}
+                  />
+                </dl>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Earnings
+                    </p>
+                    <ul className="space-y-1">
+                      {payslipDetail.data.earnings.map((e) => (
+                        <li key={e.label} className="flex justify-between text-slate-700">
+                          <span>{e.label}</span>
+                          <span>{money(e.amount, currency)}</span>
+                        </li>
+                      ))}
+                      <li className="flex justify-between border-t border-slate-200 pt-1 font-medium">
+                        <span>Gross</span>
+                        <span>{money(payslipDetail.data.totals.gross, currency)}</span>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Deductions
+                    </p>
+                    <ul className="space-y-1">
+                      {payslipDetail.data.deductions.map((d) => (
+                        <li key={d.label} className="flex justify-between text-slate-700">
+                          <span>{d.label}</span>
+                          <span>{money(d.amount, currency)}</span>
+                        </li>
+                      ))}
+                      <li className="flex justify-between border-t border-slate-200 pt-1 font-medium">
+                        <span>Total</span>
+                        <span>{money(payslipDetail.data.totals.totalDeductions, currency)}</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="flex items-baseline justify-between border-t border-slate-200 pt-4">
+                  <span className="font-medium text-slate-700">Net pay</span>
+                  <span className="text-xl font-semibold text-slate-900">
+                    {payslipDetail.data.totals.netFormatted}
+                  </span>
+                </div>
+
+                {payslipDetail.data.staff.bankAccount && (
+                  <p className="text-xs text-slate-500">
+                    Paid to {payslipDetail.data.staff.bankName} ·{' '}
+                    {payslipDetail.data.staff.bankAccount}
+                  </p>
+                )}
+              </div>
+
+              <div className="mt-6 flex justify-end gap-2 print:hidden">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setOpenPayslipId(null)}
+                >
+                  Back to run
+                </button>
+                <button type="button" className="btn-primary" onClick={() => window.print()}>
+                  Print
+                </button>
+              </div>
+            </>
+          ) : null}
+        </Modal>
       )}
 
       {showEntry && (
@@ -421,5 +771,14 @@ export function AccountingPage() {
         </Modal>
       )}
     </>
+  );
+}
+
+function Cell({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div>
+      <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
+      <dd className={`mt-0.5 text-slate-800 ${mono ? 'font-mono text-xs' : ''}`}>{value}</dd>
+    </div>
   );
 }

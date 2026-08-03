@@ -5,7 +5,7 @@ import { prisma } from '../../db/prisma.js';
 import { asyncHandler, paginate, paginationSchema, skipTake, validate } from '../../lib/http.js';
 import { requirePermission, schoolIdOf } from '../../middleware/auth.js';
 import { audit } from '../../lib/audit.js';
-import { money, round } from '../../lib/money.js';
+import { formatMoney, money, round } from '../../lib/money.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 
 /** Module 11 — Accounting: ledger, budgets, payroll and financial statements. */
@@ -239,37 +239,126 @@ accountingRouter.post(
     );
     const netTotal = round(payslips.reduce<Prisma.Decimal>((acc, p) => acc.plus(p.netPay), money(0)));
 
-    const run = await prisma.$transaction(async (tx) => {
-      const created = await tx.payrollRun.create({
-        data: {
-          schoolId,
-          period,
-          grossTotal,
-          netTotal,
-          payslips: { create: payslips },
+    // A draft posts nothing to the ledger — it is a proposal, and may be
+    // discarded. The salary expense is booked when the run is approved.
+    const run = await prisma.payrollRun.create({
+      data: {
+        schoolId,
+        period,
+        grossTotal,
+        netTotal,
+        preparedById: req.user?.id ?? null,
+        payslips: { create: payslips },
+      },
+      include: {
+        payslips: {
+          include: { staff: { select: { firstName: true, lastName: true, staffNumber: true } } },
         },
-        include: { payslips: { include: { staff: { select: { firstName: true, lastName: true, staffNumber: true } } } } },
+      },
+    });
+
+    await audit(req, { action: 'payroll.run', entityType: 'PayrollRun', entityId: run.id, metadata: { period } });
+    res.status(201).json(run);
+  }),
+);
+
+/** Sign off a draft. This is the point the salary expense reaches the ledger. */
+accountingRouter.post(
+  '/payroll/:id/approve',
+  requirePermission('payroll:manage'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+
+    const run = await prisma.payrollRun.findFirst({ where: { id, schoolId } });
+    if (!run) throw notFound('Payroll run');
+    if (run.status !== 'DRAFT') throw badRequest(`This run is already ${run.status.toLowerCase()}`);
+
+    const approved = await prisma.$transaction(async (tx) => {
+      const updated = await tx.payrollRun.update({
+        where: { id },
+        data: {
+          status: 'APPROVED',
+          approvedById: req.user?.id ?? null,
+          approvedAt: new Date(),
+        },
       });
 
-      // Salaries hit the ledger so the P&L reflects staff cost.
       await tx.ledgerEntry.create({
         data: {
           schoolId,
           entryType: LedgerEntryType.EXPENSE,
           category: 'Salaries',
-          description: `Payroll ${period}`,
-          amount: grossTotal,
-          entryDate: new Date(`${period}-01T00:00:00.000Z`),
-          reference: `PAYROLL-${period}`,
+          description: `Payroll ${run.period}`,
+          amount: run.grossTotal,
+          entryDate: new Date(`${run.period}-01T00:00:00.000Z`),
+          reference: `PAYROLL-${run.period}`,
           recordedById: req.user?.id ?? null,
         },
       });
 
-      return created;
+      return updated;
     });
 
-    await audit(req, { action: 'payroll.run', entityType: 'PayrollRun', entityId: run.id, metadata: { period } });
-    res.status(201).json(run);
+    await audit(req, {
+      action: 'payroll.approve',
+      entityType: 'PayrollRun',
+      entityId: id,
+      metadata: { period: run.period, grossTotal: run.grossTotal.toString() },
+    });
+    res.json(approved);
+  }),
+);
+
+/** Record that the money actually left the bank. */
+accountingRouter.post(
+  '/payroll/:id/mark-paid',
+  requirePermission('payroll:manage'),
+  validate(z.object({ paymentNote: z.string().max(300).optional() })),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+
+    const run = await prisma.payrollRun.findFirst({ where: { id, schoolId } });
+    if (!run) throw notFound('Payroll run');
+    if (run.status === 'DRAFT') throw badRequest('Approve the run before marking it paid');
+    if (run.status === 'PAID') throw badRequest('This run is already marked paid');
+
+    const paid = await prisma.payrollRun.update({
+      where: { id },
+      data: { status: 'PAID', paidAt: new Date(), paymentNote: req.body.paymentNote ?? null },
+    });
+
+    await audit(req, { action: 'payroll.mark_paid', entityType: 'PayrollRun', entityId: id });
+    res.json(paid);
+  }),
+);
+
+/**
+ * Discard a draft. Only drafts can go: once approved the expense is on the
+ * ledger and the run is part of the financial record.
+ */
+accountingRouter.delete(
+  '/payroll/:id',
+  requirePermission('payroll:manage'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+
+    const run = await prisma.payrollRun.findFirst({ where: { id, schoolId } });
+    if (!run) throw notFound('Payroll run');
+    if (run.status !== 'DRAFT') {
+      throw badRequest(`Only a draft can be discarded; this run is ${run.status.toLowerCase()}`);
+    }
+
+    await prisma.payrollRun.delete({ where: { id } });
+    await audit(req, {
+      action: 'payroll.discard_draft',
+      entityType: 'PayrollRun',
+      entityId: id,
+      metadata: { period: run.period },
+    });
+    res.status(204).send();
   }),
 );
 
@@ -281,11 +370,90 @@ accountingRouter.get(
       where: { id: req.params.id as string, schoolId: schoolIdOf(req) },
       include: {
         payslips: {
-          include: { staff: { select: { firstName: true, lastName: true, staffNumber: true, bankName: true, bankAccount: true } } },
+          orderBy: { staff: { lastName: 'asc' } },
+          include: {
+            staff: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                staffNumber: true,
+                jobTitle: true,
+                bankName: true,
+                bankAccount: true,
+              },
+            },
+          },
         },
       },
     });
     if (!run) throw notFound('Payroll run');
     res.json(run);
+  }),
+);
+
+/** A single payslip, with everything needed to hand one to a staff member. */
+accountingRouter.get(
+  '/payroll/:id/payslips/:payslipId',
+  requirePermission('payroll:read'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+
+    const payslip = await prisma.payslip.findFirst({
+      where: {
+        id: req.params.payslipId as string,
+        payrollRunId: req.params.id as string,
+        payrollRun: { schoolId },
+      },
+      include: {
+        payrollRun: { select: { period: true, status: true, runDate: true, paidAt: true } },
+        staff: {
+          select: {
+            firstName: true,
+            lastName: true,
+            staffNumber: true,
+            jobTitle: true,
+            bankName: true,
+            bankAccount: true,
+            department: { select: { name: true } },
+          },
+        },
+      },
+    });
+    if (!payslip) throw notFound('Payslip');
+
+    const school = await prisma.school.findUniqueOrThrow({
+      where: { id: schoolId },
+      select: { name: true, address: true, phone: true, email: true, currency: true },
+    });
+
+    const earnings = [
+      { label: 'Basic salary', amount: payslip.basicSalary.toString() },
+      { label: 'Allowances', amount: payslip.allowances.toString() },
+    ];
+    const deductions = [
+      { label: 'NSSF', amount: payslip.nssf.toString() },
+      { label: 'PAYE', amount: payslip.payeTax.toString() },
+      { label: 'Other deductions', amount: payslip.otherDeductions.toString() },
+    ];
+
+    res.json({
+      school,
+      period: payslip.payrollRun.period,
+      status: payslip.payrollRun.status,
+      paidAt: payslip.payrollRun.paidAt,
+      staff: payslip.staff,
+      earnings,
+      deductions,
+      totals: {
+        gross: payslip.grossPay.toString(),
+        grossFormatted: formatMoney(payslip.grossPay, school.currency),
+        totalDeductions: round(
+          money(payslip.nssf).plus(payslip.payeTax).plus(payslip.otherDeductions),
+        ).toString(),
+        net: payslip.netPay.toString(),
+        netFormatted: formatMoney(payslip.netPay, school.currency),
+      },
+    });
   }),
 );
