@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { Link } from 'react-router-dom';
-import { get, post, qs } from '../lib/api';
+import { del, get, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { money } from '../lib/format';
 import {
@@ -16,7 +16,7 @@ import {
   Spinner,
   TableWrap,
 } from '../components/ui';
-import type { Guardian, Paginated } from '../lib/types';
+import type { Guardian, Paginated, Student } from '../lib/types';
 
 interface GuardianRow extends Guardian {
   user: { id: string; email: string; status: string } | null;
@@ -64,6 +64,12 @@ export function ParentsPage() {
   const [statementFor, setStatementFor] = useState<string | null>(null);
   const [credential, setCredential] = useState<{ email: string; password: string } | null>(null);
 
+  const [linkingParent, setLinkingParent] = useState<GuardianRow | null>(null);
+  const [studentSearch, setStudentSearch] = useState('');
+  const [chosenStudent, setChosenStudent] = useState('');
+  const [asPrimary, setAsPrimary] = useState(false);
+  const [asFeePayer, setAsFeePayer] = useState(false);
+
   const query = qs({ page, pageSize: 25, search });
   const parents = useQuery({
     queryKey: ['parents', query],
@@ -74,6 +80,44 @@ export function ParentsPage() {
     queryKey: ['parents', statementFor, 'statement'],
     queryFn: () => get<Statement>(`/parents/${statementFor}/fee-statement`),
     enabled: Boolean(statementFor),
+  });
+
+  const studentResults = useQuery({
+    queryKey: ['students', 'search', studentSearch],
+    queryFn: () => get<Paginated<Student>>(`/students${qs({ search: studentSearch, pageSize: 10 })}`),
+    enabled: Boolean(linkingParent) && studentSearch.trim().length >= 2,
+  });
+
+  const closeLinkModal = () => {
+    setLinkingParent(null);
+    setStudentSearch('');
+    setChosenStudent('');
+    setAsPrimary(false);
+    setAsFeePayer(false);
+  };
+
+  /** Same endpoint the student page uses — the relationship has no direction. */
+  const linkChild = useMutation({
+    mutationFn: () =>
+      post(`/students/${chosenStudent}/guardians`, {
+        guardianId: linkingParent?.id,
+        isPrimary: asPrimary,
+        isFeePayer: asFeePayer,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['parents'] });
+      void queryClient.invalidateQueries({ queryKey: ['student'] });
+      closeLinkModal();
+    },
+  });
+
+  const unlinkChild = useMutation({
+    mutationFn: (vars: { studentId: string; guardianId: string }) =>
+      del(`/students/${vars.studentId}/guardians/${vars.guardianId}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['parents'] });
+      void queryClient.invalidateQueries({ queryKey: ['student'] });
+    },
   });
 
   const form = useForm<GuardianForm>({
@@ -115,6 +159,12 @@ export function ParentsPage() {
           )
         }
       />
+
+      {unlinkChild.error != null && (
+        <div className="mb-4">
+          <ErrorNote error={unlinkChild.error} />
+        </div>
+      )}
 
       <Card padded={false}>
         <div className="border-b border-slate-200 p-4">
@@ -167,13 +217,30 @@ export function ParentsPage() {
                         ) : (
                           <ul className="space-y-0.5">
                             {p.studentLinks.map((link) => (
-                              <li key={link.id}>
+                              <li key={link.id} className="flex items-center gap-2">
                                 <Link
                                   to={`/students/${link.student.id}`}
                                   className="text-sm text-brand-700 hover:underline"
                                 >
                                   {link.student.firstName} {link.student.lastName}
                                 </Link>
+                                {can('guardians:manage') && (
+                                  <button
+                                    type="button"
+                                    className="text-xs text-slate-400 hover:text-red-700 disabled:opacity-50"
+                                    disabled={unlinkChild.isPending}
+                                    title={`Unlink ${link.student.firstName} from ${p.firstName}`}
+                                    aria-label={`Unlink ${link.student.firstName} ${link.student.lastName} from ${p.firstName} ${p.lastName}`}
+                                    onClick={() =>
+                                      unlinkChild.mutate({
+                                        studentId: link.student.id,
+                                        guardianId: p.id,
+                                      })
+                                    }
+                                  >
+                                    ✕
+                                  </button>
+                                )}
                               </li>
                             ))}
                           </ul>
@@ -186,7 +253,16 @@ export function ParentsPage() {
                           <span className="badge bg-slate-100 text-slate-600">No login</span>
                         )}
                       </td>
-                      <td className="text-right">
+                      <td className="whitespace-nowrap text-right">
+                        {can('guardians:manage') && (
+                          <button
+                            type="button"
+                            className="mr-3 text-sm text-brand-700 hover:underline"
+                            onClick={() => setLinkingParent(p)}
+                          >
+                            Link child
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="text-sm text-brand-700 hover:underline"
@@ -211,6 +287,107 @@ export function ParentsPage() {
           </>
         )}
       </Card>
+
+      {linkingParent && (
+        <Modal
+          title={`Link a child to ${linkingParent.firstName} ${linkingParent.lastName}`}
+          onClose={closeLinkModal}
+        >
+          {linkChild.error != null && (
+            <div className="mb-4">
+              <ErrorNote error={linkChild.error} />
+            </div>
+          )}
+
+          <div className="space-y-4">
+            <div>
+              <label className="label" htmlFor="student-search">
+                Find the student
+              </label>
+              <input
+                id="student-search"
+                className="input"
+                autoFocus
+                placeholder="Name or admission number"
+                value={studentSearch}
+                onChange={(e) => setStudentSearch(e.target.value)}
+              />
+            </div>
+
+            {studentSearch.trim().length >= 2 && (
+              <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200">
+                {studentResults.isLoading ? (
+                  <Spinner label="Searching…" />
+                ) : studentResults.data?.data.length === 0 ? (
+                  <p className="p-4 text-sm text-slate-500">No students match that search.</p>
+                ) : (
+                  <ul>
+                    {studentResults.data?.data.map((s) => (
+                      <li key={s.id}>
+                        <label className="flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-2 text-sm last:border-0 hover:bg-slate-50">
+                          <input
+                            type="radio"
+                            name="student"
+                            value={s.id}
+                            checked={chosenStudent === s.id}
+                            onChange={() => setChosenStudent(s.id)}
+                          />
+                          <span>
+                            <span className="font-medium">
+                              {s.firstName} {s.lastName}
+                            </span>
+                            <span className="block text-xs text-slate-400">
+                              {s.admissionNumber}
+                              {s.enrollments[0] ? ` · ${s.enrollments[0].schoolClass.name}` : ''}
+                            </span>
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={asPrimary}
+                  onChange={(e) => setAsPrimary(e.target.checked)}
+                />
+                Primary contact for this child
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={asFeePayer}
+                  onChange={(e) => setAsFeePayer(e.target.checked)}
+                />
+                Responsible for this child's fees
+              </label>
+              <p className="text-xs text-slate-500">
+                Each child has one primary contact and one fee payer — setting these moves them from
+                whoever holds them now.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button type="button" className="btn-secondary" onClick={closeLinkModal}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!chosenStudent || linkChild.isPending}
+                onClick={() => linkChild.mutate()}
+              >
+                {linkChild.isPending ? 'Linking…' : 'Link child'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {showForm && (
         <Modal title="Add a parent or guardian" onClose={() => setShowForm(false)}>
