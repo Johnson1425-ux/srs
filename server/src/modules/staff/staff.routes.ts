@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { EmploymentStatus, Gender, LeaveStatus, Role, StaffType } from '@prisma/client';
+import { EmploymentStatus, Gender, LeaveStatus, Prisma, Role, StaffType } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../db/prisma.js';
 import { asyncHandler, paginate, paginationSchema, skipTake, validate } from '../../lib/http.js';
@@ -8,6 +8,7 @@ import { hashPassword, randomToken } from '../../lib/tokens.js';
 import { nextStaffNumber } from '../../lib/sequence.js';
 import { audit } from '../../lib/audit.js';
 import { badRequest, notFound } from '../../lib/errors.js';
+import { money, round } from '../../lib/money.js';
 
 /** Module 6 — Staff Management (teachers + non-teaching staff). */
 export const staffRouter: Router = Router();
@@ -167,6 +168,155 @@ staffRouter.patch(
     const staff = await prisma.staff.update({ where: { id }, data: req.body });
     await audit(req, { action: 'staff.update', entityType: 'Staff', entityId: id });
     res.json(staff);
+  }),
+);
+
+/**
+ * Change employment status. Suspension or termination also closes the person's
+ * system access — leaving an active login for someone who has left the school
+ * is the kind of gap that matters.
+ */
+staffRouter.post(
+  '/:id/status',
+  requirePermission('staff:manage'),
+  validate(
+    z.object({
+      employmentStatus: z.nativeEnum(EmploymentStatus),
+      reason: z.string().max(300).optional(),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+    const { employmentStatus, reason } = req.body as {
+      employmentStatus: EmploymentStatus;
+      reason?: string;
+    };
+
+    const staff = await prisma.staff.findFirst({ where: { id, schoolId } });
+    if (!staff) throw notFound('Staff member');
+    if (staff.employmentStatus === employmentStatus) {
+      throw badRequest(`This staff member is already ${employmentStatus.toLowerCase().replace('_', ' ')}`);
+    }
+
+    const closesAccess =
+      employmentStatus === EmploymentStatus.SUSPENDED ||
+      employmentStatus === EmploymentStatus.TERMINATED;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.staff.update({
+        where: { id },
+        data: { employmentStatus, statusReason: reason ?? null, statusChangedAt: new Date() },
+      });
+
+      if (staff.userId) {
+        await tx.user.update({
+          where: { id: staff.userId },
+          data: { status: closesAccess ? 'DISABLED' : 'ACTIVE' },
+        });
+        if (closesAccess) {
+          await tx.session.updateMany({
+            where: { userId: staff.userId, revokedAt: null },
+            data: { revokedAt: new Date() },
+          });
+        }
+      }
+
+      return result;
+    });
+
+    await audit(req, {
+      action: `staff.status.${employmentStatus.toLowerCase()}`,
+      entityType: 'Staff',
+      entityId: id,
+      metadata: { reason },
+    });
+    res.json(updated);
+  }),
+);
+
+// --- Allowances (Module 6 — salary information) -----------------------------
+
+staffRouter.get(
+  '/:id/allowances',
+  requirePermission('payroll:read', 'staff:manage'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+
+    const staff = await prisma.staff.findFirst({ where: { id, schoolId } });
+    if (!staff) throw notFound('Staff member');
+
+    const data = await prisma.staffAllowance.findMany({
+      where: { staffId: id },
+      orderBy: { name: 'asc' },
+    });
+
+    const monthlyTotal = data
+      .filter((a) => a.isActive)
+      .reduce<Prisma.Decimal>((acc, a) => acc.plus(a.amount), money(0));
+
+    res.json({
+      data,
+      basicSalary: staff.basicSalary?.toString() ?? null,
+      monthlyAllowanceTotal: round(monthlyTotal).toString(),
+    });
+  }),
+);
+
+staffRouter.post(
+  '/:id/allowances',
+  requirePermission('payroll:manage'),
+  validate(
+    z.object({
+      name: z.string().min(2).max(60),
+      amount: z.number().nonnegative(),
+      isActive: z.boolean().default(true),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+    const { name, amount, isActive } = req.body as {
+      name: string;
+      amount: number;
+      isActive: boolean;
+    };
+
+    const staff = await prisma.staff.findFirst({ where: { id, schoolId } });
+    if (!staff) throw notFound('Staff member');
+
+    // Re-adding an existing allowance updates its rate rather than failing.
+    const allowance = await prisma.staffAllowance.upsert({
+      where: { staffId_name: { staffId: id, name } },
+      create: { staffId: id, name, amount, isActive },
+      update: { amount, isActive },
+    });
+
+    await audit(req, {
+      action: 'staff.allowance_set',
+      entityType: 'Staff',
+      entityId: id,
+      metadata: { name, amount },
+    });
+    res.status(201).json(allowance);
+  }),
+);
+
+staffRouter.delete(
+  '/:id/allowances/:allowanceId',
+  requirePermission('payroll:manage'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+
+    const removed = await prisma.staffAllowance.deleteMany({
+      where: { id: req.params.allowanceId as string, staffId: id, staff: { schoolId } },
+    });
+    if (removed.count === 0) throw notFound('Allowance');
+
+    await audit(req, { action: 'staff.allowance_remove', entityType: 'Staff', entityId: id });
+    res.status(204).send();
   }),
 );
 

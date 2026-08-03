@@ -651,6 +651,8 @@ model Staff {
   qualification String?
   hireDate     DateTime         @default(now())
   employmentStatus EmploymentStatus @default(ACTIVE)
+  statusReason String?
+  statusChangedAt DateTime?
 
   basicSalary  Decimal? @db.Decimal(14, 2)
   bankName     String?
@@ -659,6 +661,7 @@ model Staff {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  allowances      StaffAllowance[]
   classSubjects   ClassSubject[]
   streamsLed      Stream[]           @relation("StreamClassTeacher")
   attendanceTaken AttendanceRecord[] @relation("AttendanceRecordedBy")
@@ -672,6 +675,23 @@ model Staff {
 
   @@unique([schoolId, staffNumber])
   @@index([schoolId, staffType])
+}
+
+// Recurring allowances forming part of a staff member's monthly pay — housing,
+// transport, responsibility and so on. Payroll sums the active ones per person,
+// so two teachers on the same basic salary can be paid differently.
+model StaffAllowance {
+  id        String   @id @default(cuid())
+  staffId   String
+  staff     Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  name      String
+  amount    Decimal  @db.Decimal(14, 2)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([staffId, name])
+  @@index([staffId, isActive])
 }
 
 model StaffAttendance {
@@ -1050,6 +1070,9 @@ model Payslip {
   staff        Staff      @relation(fields: [staffId], references: [id], onDelete: Cascade)
   basicSalary  Decimal    @db.Decimal(14, 2)
   allowances   Decimal    @db.Decimal(14, 2) @default(0)
+  // Snapshot of what made up the allowance total, so a payslip issued months
+  // ago still itemises correctly even after the underlying rates change.
+  allowanceBreakdown Json?
   grossPay     Decimal    @db.Decimal(14, 2)
   payeTax      Decimal    @db.Decimal(14, 2) @default(0)
   nssf         Decimal    @db.Decimal(14, 2) @default(0)

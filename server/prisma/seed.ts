@@ -268,6 +268,18 @@ async function main(): Promise<void> {
     );
   }
 
+  // Recurring allowances, so payroll shows realistic variation between people
+  // on similar basic salaries.
+  await prisma.staffAllowance.createMany({
+    data: [
+      { staffId: headTeacher.id, name: 'Responsibility', amount: 400_000 },
+      { staffId: headTeacher.id, name: 'Housing', amount: 350_000 },
+      ...teachers.slice(0, 5).map((t) => ({ staffId: t.id, name: 'Housing', amount: 180_000 })),
+      ...teachers.slice(0, 3).map((t) => ({ staffId: t.id, name: 'Transport', amount: 60_000 })),
+      { staffId: driver.id, name: 'Transport', amount: 45_000 },
+    ],
+  });
+
   // Class teachers and subject allocation
   for (const [i, schoolClass] of classes.entries()) {
     for (const [j, stream] of schoolClass.streams.entries()) {

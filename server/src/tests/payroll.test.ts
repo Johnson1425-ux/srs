@@ -173,16 +173,123 @@ describe('payroll approval workflow', () => {
     expect(res.body.totals.netFormatted).toContain('TZS');
   });
 
-  it('keeps payroll away from roles without the permission', async () => {
-    const teacherToken = await login(fixture.users.teacher!.email);
+  it('adds each person\'s own allowances and itemises them on the payslip', async () => {
+    const adminToken = await login(fixture.users.admin!.email);
 
-    const read = await request(app).get('/api/v1/accounting/payroll').set(authed(teacherToken));
+    for (const [name, amount] of [
+      ['Housing', 200_000],
+      ['Transport', 60_000],
+    ] as const) {
+      const res = await request(app)
+        .post(`/api/v1/staff/${fixture.teacherStaffId}/allowances`)
+        .set(authed(token))
+        .send({ name, amount });
+      expect(res.status).toBe(201);
+    }
+
+    const listed = await request(app)
+      .get(`/api/v1/staff/${fixture.teacherStaffId}/allowances`)
+      .set(authed(adminToken));
+    expect(Number(listed.body.monthlyAllowanceTotal)).toBe(260_000);
+
+    const run = await request(app)
+      .post('/api/v1/accounting/payroll')
+      .set(authed(token))
+      .send({ period: '2026-05', allowances: 0 });
+    expect(run.status).toBe(201);
+
+    const slip = run.body.payslips[0];
+    // 900,000 basic + 260,000 allowances.
+    expect(Number(slip.allowances)).toBe(260_000);
+    expect(Number(slip.grossPay)).toBe(1_160_000);
+
+    const detail = await request(app)
+      .get(`/api/v1/accounting/payroll/${run.body.id}/payslips/${slip.id}`)
+      .set(authed(token));
+    const labels = detail.body.earnings.map((e: { label: string }) => e.label);
+    expect(labels).toEqual(expect.arrayContaining(['Basic salary', 'Housing', 'Transport']));
+
+    await request(app).delete(`/api/v1/accounting/payroll/${run.body.id}`).set(authed(token));
+  });
+
+  it('keeps a payslip itemised at the rates that applied when it was run', async () => {
+    const run = await request(app)
+      .post('/api/v1/accounting/payroll')
+      .set(authed(token))
+      .send({ period: '2026-06', allowances: 0 });
+    const slipId = run.body.payslips[0].id;
+
+    // Change the rate after the run.
+    await request(app)
+      .post(`/api/v1/staff/${fixture.teacherStaffId}/allowances`)
+      .set(authed(token))
+      .send({ name: 'Housing', amount: 999_000 });
+
+    const detail = await request(app)
+      .get(`/api/v1/accounting/payroll/${run.body.id}/payslips/${slipId}`)
+      .set(authed(token));
+
+    const housing = detail.body.earnings.find((e: { label: string }) => e.label === 'Housing');
+    expect(Number(housing.amount)).toBe(200_000);
+
+    await request(app).delete(`/api/v1/accounting/payroll/${run.body.id}`).set(authed(token));
+  });
+
+  it('drops terminated staff from later payroll runs', async () => {
+    const adminToken = await login(fixture.users.admin!.email);
+
+    const res = await request(app)
+      .post(`/api/v1/staff/${fixture.teacherStaffId}/status`)
+      .set(authed(adminToken))
+      .send({ employmentStatus: 'TERMINATED', reason: 'Resigned' });
+    expect(res.status).toBe(200);
+
+    const run = await request(app)
+      .post('/api/v1/accounting/payroll')
+      .set(authed(token))
+      .send({ period: '2026-07', allowances: 0 });
+
+    // The only salaried staff member has left, so there is nobody to pay.
+    expect(run.status).toBe(400);
+    expect(run.body.error.message).toContain('basic salary');
+  });
+
+  it('closes system access when a staff member is terminated', async () => {
+    const staff = await prisma.staff.findUniqueOrThrow({
+      where: { id: fixture.teacherStaffId },
+      select: { userId: true, employmentStatus: true, statusReason: true },
+    });
+    expect(staff.employmentStatus).toBe('TERMINATED');
+    expect(staff.statusReason).toBe('Resigned');
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: staff.userId! } });
+    expect(user.status).toBe('DISABLED');
+
+    // And the login no longer works.
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: fixture.users.teacher!.email, password: 'Passw0rd!' });
+    expect(res.status).toBe(403);
+  });
+
+  it('keeps payroll away from roles without the permission', async () => {
+    // Deliberately not the teacher: an earlier test terminates them, which
+    // disables the login. The librarian is equally without payroll rights.
+    const librarianToken = await login(fixture.users.librarian!.email);
+
+    const read = await request(app).get('/api/v1/accounting/payroll').set(authed(librarianToken));
     expect(read.status).toBe(403);
 
     const runs = await request(app).get('/api/v1/accounting/payroll').set(authed(token));
     const approve = await request(app)
       .post(`/api/v1/accounting/payroll/${runs.body.data[0].id}/approve`)
-      .set(authed(teacherToken));
+      .set(authed(librarianToken));
     expect(approve.status).toBe(403);
+
+    const allowance = await request(app)
+      .post(`/api/v1/staff/${fixture.teacherStaffId}/allowances`)
+      .set(authed(librarianToken))
+      .send({ name: 'Sneaky', amount: 1_000_000 });
+    expect(allowance.status).toBe(403);
   });
 });

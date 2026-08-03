@@ -213,19 +213,39 @@ accountingRouter.post(
         employmentStatus: { in: [EmploymentStatus.ACTIVE, EmploymentStatus.ON_LEAVE] },
         basicSalary: { not: null },
       },
+      include: { allowances: { where: { isActive: true }, orderBy: { name: 'asc' } } },
     });
     if (staff.length === 0) throw badRequest('No staff have a basic salary configured');
 
     const payslips = staff.map((s) => {
       const basic = money(s.basicSalary ?? 0);
-      const gross = round(basic.plus(allowances));
+
+      // Each person's own recurring allowances, plus anything applied to the
+      // whole run (a one-off across-the-board payment, say).
+      const breakdown = s.allowances.map((a) => ({
+        name: a.name,
+        amount: round(a.amount).toString(),
+      }));
+      if (allowances > 0) {
+        breakdown.push({ name: 'General allowance', amount: round(allowances).toString() });
+      }
+
+      const allowanceTotal = round(
+        s.allowances
+          .reduce<Prisma.Decimal>((acc, a) => acc.plus(a.amount), money(0))
+          .plus(allowances),
+      );
+
+      const gross = round(basic.plus(allowanceTotal));
       const nssf = round(gross.times(NSSF_RATE));
       const paye = payeFor(gross.minus(nssf));
       const net = round(gross.minus(nssf).minus(paye));
+
       return {
         staffId: s.id,
         basicSalary: round(basic),
-        allowances: round(money(allowances)),
+        allowances: allowanceTotal,
+        allowanceBreakdown: breakdown as unknown as Prisma.InputJsonValue,
         grossPay: gross,
         payeTax: paye,
         nssf,
@@ -427,9 +447,17 @@ accountingRouter.get(
       select: { name: true, address: true, phone: true, email: true, currency: true },
     });
 
+    // Itemise from the snapshot taken at run time, so a payslip issued months
+    // ago still shows the rates that actually applied then.
+    const itemised = Array.isArray(payslip.allowanceBreakdown)
+      ? (payslip.allowanceBreakdown as Array<{ name: string; amount: string }>)
+      : [];
+
     const earnings = [
       { label: 'Basic salary', amount: payslip.basicSalary.toString() },
-      { label: 'Allowances', amount: payslip.allowances.toString() },
+      ...(itemised.length > 0
+        ? itemised.map((a) => ({ label: a.name, amount: a.amount }))
+        : [{ label: 'Allowances', amount: payslip.allowances.toString() }]),
     ];
     const deductions = [
       { label: 'NSSF', amount: payslip.nssf.toString() },
