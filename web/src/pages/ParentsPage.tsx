@@ -6,6 +6,7 @@ import { del, get, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { money } from '../lib/format';
 import {
+  ActionMenu,
   Card,
   EmptyState,
   ErrorNote,
@@ -253,23 +254,16 @@ export function ParentsPage() {
                           <span className="badge bg-slate-100 text-slate-600">No login</span>
                         )}
                       </td>
-                      <td className="whitespace-nowrap text-right">
-                        {can('guardians:manage') && (
-                          <button
-                            type="button"
-                            className="mr-3 text-sm text-brand-700 hover:underline"
-                            onClick={() => setLinkingParent(p)}
-                          >
-                            Link child
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="text-sm text-brand-700 hover:underline"
-                          onClick={() => setStatementFor(p.id)}
-                        >
-                          Fee statement
-                        </button>
+                      <td className="w-12 text-right">
+                        <ActionMenu
+                          label={`Actions for ${p.firstName} ${p.lastName}`}
+                          items={[
+                            ...(can('guardians:manage')
+                              ? [{ label: 'Link child', onClick: () => setLinkingParent(p) }]
+                              : []),
+                            { label: 'Fee statement', onClick: () => setStatementFor(p.id) },
+                          ]}
+                        />
                       </td>
                     </tr>
                   ))}

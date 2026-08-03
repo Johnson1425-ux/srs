@@ -5,6 +5,7 @@ import { download, get, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { date, dateTime, isoDate, money, titleCase } from '../lib/format';
 import {
+  ActionMenu,
   Badge,
   Card,
   EmptyState,
@@ -114,6 +115,16 @@ export function PaymentsPage() {
     },
   });
 
+  const [receiptError, setReceiptError] = useState<unknown>(null);
+
+  /** Menu items are synchronous, so the fetch is kicked off rather than awaited. */
+  const openReceipt = (paymentId: string) => {
+    setReceiptError(null);
+    void get<Receipt>(`/payments/${paymentId}/receipt`)
+      .then(setReceipt)
+      .catch(setReceiptError);
+  };
+
   const reverse = useMutation({
     mutationFn: (paymentId: string) => post(`/payments/${paymentId}/reverse`, { reason }),
     onSuccess: () => {
@@ -155,6 +166,12 @@ export function PaymentsPage() {
           </>
         }
       />
+
+      {receiptError != null && (
+        <div className="mb-4">
+          <ErrorNote error={receiptError} />
+        </div>
+      )}
 
       <Card padded={false}>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4">
@@ -228,23 +245,22 @@ export function PaymentsPage() {
                       <td>
                         <Badge status={p.status} />
                       </td>
-                      <td className="whitespace-nowrap text-right">
-                        <button
-                          type="button"
-                          className="text-sm text-brand-700 hover:underline"
-                          onClick={async () => setReceipt(await get<Receipt>(`/payments/${p.id}/receipt`))}
-                        >
-                          Receipt
-                        </button>
-                        {can('payments:reverse') && p.status === 'CONFIRMED' && (
-                          <button
-                            type="button"
-                            className="ml-3 text-sm text-red-700 hover:underline"
-                            onClick={() => setReversing(p)}
-                          >
-                            Reverse
-                          </button>
-                        )}
+                      <td className="w-12 text-right">
+                        <ActionMenu
+                          label={`Actions for receipt ${p.receiptNumber}`}
+                          items={[
+                            { label: 'View receipt', onClick: () => openReceipt(p.id) },
+                            ...(can('payments:reverse') && p.status === 'CONFIRMED'
+                              ? [
+                                  {
+                                    label: 'Reverse payment',
+                                    danger: true,
+                                    onClick: () => setReversing(p),
+                                  },
+                                ]
+                              : []),
+                          ]}
+                        />
                       </td>
                     </tr>
                   ))}
