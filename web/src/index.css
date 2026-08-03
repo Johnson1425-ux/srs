@@ -17,6 +17,47 @@
   }
 }
 
+/**
+ * Print.
+ *
+ * On screen the shell pins itself to the viewport and scrolls in panes. Left
+ * alone, printing would then emit only the first screenful — so the document
+ * has to flow naturally again. Receipts, payslips and report cards are printed
+ * from modals, which are fixed-position and internally scrolled on screen.
+ */
+@media print {
+  .app-shell,
+  .app-main {
+    display: block !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  /* Navigation is not part of a receipt. */
+  .app-sidebar {
+    display: none !important;
+  }
+
+  [role='dialog'] {
+    position: static !important;
+    overflow: visible !important;
+    background: none !important;
+    padding: 0 !important;
+  }
+
+  [role='dialog'] > div {
+    max-width: none !important;
+    box-shadow: none !important;
+  }
+
+  /* The panel's own scroll box would otherwise clip a long payslip. */
+  [role='dialog'] > div > div {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+}
+
 @layer components {
   .card {
     @apply rounded-xl border border-slate-200 bg-white shadow-sm;

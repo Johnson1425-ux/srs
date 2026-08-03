@@ -110,7 +110,11 @@ export function AppLayout() {
   };
 
   return (
-    <div className="min-h-screen lg:flex">
+    // On large screens the shell fills the viewport exactly and never scrolls
+    // itself; the sidebar and the page each scroll inside their own pane. On
+    // small screens the sidebar is a collapsible menu above the content, so
+    // normal document flow is what you want.
+    <div className="app-shell min-h-screen lg:flex lg:h-screen lg:overflow-hidden">
       {/* Mobile top bar */}
       <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
         <button
@@ -127,7 +131,7 @@ export function AppLayout() {
 
       <aside
         id="main-nav"
-        className={`${menuOpen ? 'block' : 'hidden'} w-full shrink-0 border-r border-slate-200 bg-white lg:block lg:w-64`}
+        className={`app-sidebar ${menuOpen ? 'block' : 'hidden'} w-full shrink-0 border-r border-slate-200 bg-white lg:block lg:h-screen lg:w-64 lg:overflow-hidden`}
       >
         <div className="flex h-full flex-col">
           <div className="hidden items-center gap-3 border-b border-slate-200 px-5 py-4 lg:flex">
@@ -232,7 +236,7 @@ export function AppLayout() {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">
+      <main className="app-main min-w-0 flex-1 px-4 py-6 sm:px-6 lg:h-screen lg:overflow-y-auto lg:px-8">
         <Outlet />
       </main>
     </div>
