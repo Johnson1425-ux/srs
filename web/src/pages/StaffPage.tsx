@@ -5,6 +5,7 @@ import { del, get, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { money, titleCase } from '../lib/format';
 import {
+  ActionMenu,
   Badge,
   Card,
   EmptyState,
@@ -244,30 +245,28 @@ export function StaffPage() {
                       <td>
                         <Badge status={s.employmentStatus} />
                       </td>
-                      <td className="whitespace-nowrap text-right">
-                        {can('payroll:manage') && (
-                          <button
-                            type="button"
-                            className="mr-3 text-sm text-brand-700 hover:underline"
-                            onClick={() => setAllowancesFor(s)}
-                          >
-                            Allowances
-                          </button>
-                        )}
-                        {can('staff:manage') && (
-                          <button
-                            type="button"
-                            className="text-sm text-brand-700 hover:underline"
-                            onClick={() => {
-                              setStatusFor(s);
-                              setNewStatus(
-                                s.employmentStatus === 'ACTIVE' ? 'ON_LEAVE' : 'ACTIVE',
-                              );
-                            }}
-                          >
-                            Change status
-                          </button>
-                        )}
+                      <td className="w-12 text-right">
+                        <ActionMenu
+                          label={`Actions for ${s.firstName} ${s.lastName}`}
+                          items={[
+                            ...(can('payroll:manage')
+                              ? [{ label: 'Allowances', onClick: () => setAllowancesFor(s) }]
+                              : []),
+                            ...(can('staff:manage')
+                              ? [
+                                  {
+                                    label: 'Change status',
+                                    onClick: () => {
+                                      setStatusFor(s);
+                                      setNewStatus(
+                                        s.employmentStatus === 'ACTIVE' ? 'ON_LEAVE' : 'ACTIVE',
+                                      );
+                                    },
+                                  },
+                                ]
+                              : []),
+                          ]}
+                        />
                       </td>
                     </tr>
                   ))}

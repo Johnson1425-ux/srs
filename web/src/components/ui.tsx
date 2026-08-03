@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { statusTone, titleCase } from '../lib/format';
 
 export function PageHeader({
@@ -192,6 +193,119 @@ export function Modal({
 /** Horizontal scroll container so wide tables never break the page layout. */
 export function TableWrap({ children }: { children: ReactNode }) {
   return <div className="overflow-x-auto">{children}</div>;
+}
+
+export interface ActionItem {
+  label: string;
+  onClick: () => void;
+  /** Styles the item as destructive. */
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+/**
+ * Row-level action menu.
+ *
+ * Rendered through a portal with fixed positioning: table rows live inside an
+ * `overflow-x-auto` wrapper, which establishes a clipping context that would
+ * otherwise cut the dropdown off at the table's edge.
+ */
+export function ActionMenu({ items, label = 'Actions' }: { items: ActionItem[]; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    // Any scroll or resize invalidates the anchor, so close rather than drift.
+    const close = () => setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
+
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  if (items.length === 0) return null;
+
+  const toggle = () => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      // Estimated rather than measured, because the menu is not in the DOM
+      // yet. Close enough to decide which way it should open.
+      const estimatedHeight = items.length * 36 + 8;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const flipUp = spaceBelow < estimatedHeight + 8 && rect.top > estimatedHeight;
+
+      setPosition({
+        top: flipUp ? rect.top - estimatedHeight - 4 : rect.bottom + 4,
+        right: window.innerWidth - rect.right,
+      });
+    }
+    setOpen((v) => !v);
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={toggle}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={label}
+        className="rounded-md px-2 py-1 text-lg leading-none text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+      >
+        ⋯
+      </button>
+
+      {open &&
+        createPortal(
+          <>
+            {/* Catches the click that dismisses the menu. */}
+            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
+            <div
+              role="menu"
+              aria-label={label}
+              className="fixed z-50 min-w-[11rem] overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+              style={{ top: position.top, right: position.right }}
+            >
+              {items.map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  role="menuitem"
+                  disabled={item.disabled}
+                  onClick={() => {
+                    setOpen(false);
+                    item.onClick();
+                  }}
+                  className={`block w-full px-4 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    item.danger
+                      ? 'text-red-700 hover:bg-red-50'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </>,
+          document.body,
+        )}
+    </>
+  );
 }
 
 export function Pagination({
