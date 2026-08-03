@@ -366,12 +366,53 @@ would break every deployment that forgot to edit it.
    assumes HTTPS everywhere (PRD section 6). Vercel and Render do this for you.
 2. Set strong `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` values. Rotating them
    invalidates all sessions.
-3. Configure `SMS_GATEWAY_*` and `SMTP_*`. **Left blank, messages are recorded in
-   the outbox with status `QUEUED` and nothing is dispatched** — the school keeps
-   a full history, and wiring a provider later means implementing one `deliver`
-   function without touching any caller.
+3. Configure SMS (below) and `SMTP_*`. **Email is still outbox-only** — messages
+   are recorded with status `QUEUED` and nothing is dispatched until a transport
+   is implemented.
 4. Schedule `pg_dump` for the daily backups the PRD requires.
 5. The API is stateless, so it scales horizontally behind the proxy.
+
+### SMS via Africa's Talking
+
+```
+SMS_PROVIDER=africastalking
+AFRICASTALKING_USERNAME=your-username     # "sandbox" against the sandbox
+AFRICASTALKING_API_KEY=your-api-key
+AFRICASTALKING_SANDBOX=false
+SMS_SENDER_ID=SCHOOL                      # deployment default
+SMS_MAX_ATTEMPTS=3
+```
+
+`SMS_PROVIDER=none` is the default, so a development machine records messages
+without spending credit or texting a real parent. Both a username and an API key
+must be present or the provider counts as unconfigured — half-configured is
+treated as off rather than failing at the first send.
+
+**Sender ID.** Each school can set its own under Settings, which overrides
+`SMS_SENDER_ID`. A live alphanumeric sender ID has to be registered with Africa's
+Talking first; leave it blank to fall back to the account default.
+
+**How sending works.** Queueing a message nudges a dispatcher that runs outside
+the request, so a bulk send to several hundred parents does not hold the HTTP
+response open. A worker also sweeps every 60 seconds to pick up retries. Messages
+are claimed before the request goes out, so overlapping sweeps cannot send the
+same message twice — a crash mid-flight leaves a message `FAILED` rather than
+silently re-sent, which is the safer way round for something that costs money and
+reaches a parent's phone.
+
+**Retries.** Failures are separated by whether repeating the request could ever
+help. An invalid number or unregistered sender ID fails immediately; a timeout,
+routing error or empty balance is requeued until `SMS_MAX_ATTEMPTS` is reached.
+After fixing whatever caused a batch to fail, **Retry failed** on the Message log
+puts them back in the queue.
+
+Recipients sharing an identical body are sent in one request, so a school-wide
+announcement is a single call while personalised reminders are necessarily one
+each. Delivery status, the gateway's message id and its reported cost are stored
+per message.
+
+`AFRICASTALKING_BASE_URL` overrides the endpoint, for an outbound proxy or a
+stub during testing.
 
 ---
 
@@ -436,6 +477,10 @@ Stated plainly, with reasons:
    provider and transaction reference, and the schema and webhook secret are in
    place, but no live M-Pesa/Airtel/Mixx/HaloPesa API calls are made — those need
    merchant credentials. The PRD places this in Phase 3.
+
+   SMS **is** wired up, against Africa's Talking — see the deployment section.
+   Email is not: SMTP settings are read but no transport is implemented, so
+   email messages stay in the outbox.
 
 5. **File uploads.** The document module records metadata and a storage URL; the
    binary upload path to S3/Azure Blob is not wired up, so `STORAGE_DRIVER` is

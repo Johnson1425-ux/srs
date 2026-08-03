@@ -30,9 +30,22 @@ const schema = z.object({
   MAX_FAILED_LOGINS: z.coerce.number().int().positive().default(5),
   ACCOUNT_LOCK_MINUTES: z.coerce.number().int().positive().default(15),
 
-  SMS_GATEWAY_URL: z.string().optional(),
-  SMS_GATEWAY_API_KEY: z.string().optional(),
+  // `none` keeps SMS in the outbox without dispatching — the default, so a
+  // development machine never spends real credit or texts real parents.
+  SMS_PROVIDER: z.enum(['none', 'africastalking']).default('none'),
   SMS_SENDER_ID: z.string().default('SCHOOL'),
+  /** How many delivery attempts before a message is left FAILED. */
+  SMS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+
+  AFRICASTALKING_USERNAME: z.string().optional(),
+  AFRICASTALKING_API_KEY: z.string().optional(),
+  // The sandbox has its own host and expects the username "sandbox".
+  AFRICASTALKING_SANDBOX: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  /** Overrides the gateway endpoint — for an outbound proxy, or a stub in testing. */
+  AFRICASTALKING_BASE_URL: z.string().url().optional(),
 
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().optional(),
@@ -56,6 +69,15 @@ export const env = parsed.data;
 
 export const isProduction = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
+
+/**
+ * SMS only dispatches when a provider is named *and* its credentials are
+ * present. Half-configured is treated as unconfigured, so a missing key fails
+ * loudly at boot-time reasoning rather than silently at 3am.
+ */
+export const smsConfigured =
+  env.SMS_PROVIDER === 'africastalking' &&
+  Boolean(env.AFRICASTALKING_USERNAME && env.AFRICASTALKING_API_KEY);
 
 /** A single school running its own installation — no plans, no platform admin. */
 export const isStandalone = env.DEPLOYMENT_MODE === 'standalone';

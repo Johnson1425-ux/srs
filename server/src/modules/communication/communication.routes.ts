@@ -7,6 +7,8 @@ import { requirePermission, schoolIdOf } from '../../middleware/auth.js';
 import { audit } from '../../lib/audit.js';
 import { badRequest } from '../../lib/errors.js';
 import { normalizePhone, queueMessages, renderTemplate } from './message.service.js';
+import { dispatchQueuedSms } from './dispatcher.js';
+import { env, smsConfigured } from '../../config/env.js';
 
 /** Module 16 — Communication: announcements, templates and bulk messaging. */
 export const communicationRouter: Router = Router();
@@ -278,6 +280,64 @@ communicationRouter.get(
     ]);
 
     res.json(paginate(data, total, q.page, q.pageSize));
+  }),
+);
+
+/** Delivery status of the SMS gateway, for the outbox screen. */
+communicationRouter.get(
+  '/messages/status',
+  requirePermission('communication:read'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+
+    const counts = await prisma.message.groupBy({
+      by: ['status'],
+      where: { schoolId, channel: MessageChannel.SMS },
+      _count: { _all: true },
+    });
+
+    res.json({
+      provider: env.SMS_PROVIDER,
+      configured: smsConfigured,
+      sandbox: env.AFRICASTALKING_SANDBOX,
+      senderId: env.SMS_SENDER_ID,
+      maxAttempts: env.SMS_MAX_ATTEMPTS,
+      counts: Object.fromEntries(counts.map((c) => [c.status, c._count._all])),
+    });
+  }),
+);
+
+/** Send whatever is queued now, rather than waiting for the next sweep. */
+communicationRouter.post(
+  '/messages/dispatch',
+  requirePermission('communication:send'),
+  asyncHandler(async (req, res) => {
+    const summary = await dispatchQueuedSms();
+    await audit(req, { action: 'message.dispatch', metadata: { ...summary } });
+    res.json(summary);
+  }),
+);
+
+/**
+ * Put failed messages back in the queue. Used after fixing whatever caused the
+ * failure — topping up credit, correcting a sender ID — since those messages
+ * have exhausted their attempts and will not be picked up on their own.
+ */
+communicationRouter.post(
+  '/messages/retry-failed',
+  requirePermission('communication:send'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+
+    const result = await prisma.message.updateMany({
+      where: { schoolId, channel: MessageChannel.SMS, status: MessageStatus.FAILED },
+      data: { status: MessageStatus.QUEUED, attempts: 0, error: null },
+    });
+
+    await audit(req, { action: 'message.retry_failed', metadata: { requeued: result.count } });
+
+    const summary = await dispatchQueuedSms();
+    res.json({ requeued: result.count, ...summary });
   }),
 );
 

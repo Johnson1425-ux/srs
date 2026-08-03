@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { get, post } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { dateTime, titleCase } from '../lib/format';
+import { dateTime, statusTone, titleCase } from '../lib/format';
 import {
   Badge,
   Card,
@@ -34,6 +34,18 @@ interface Message {
   body: string;
   status: string;
   createdAt: string;
+  attempts: number;
+  error: string | null;
+  cost: string | null;
+}
+
+interface SmsStatus {
+  provider: string;
+  configured: boolean;
+  sandbox: boolean;
+  senderId: string;
+  maxAttempts: number;
+  counts: Record<string, number>;
 }
 
 interface AnnouncementForm {
@@ -75,6 +87,43 @@ export function CommunicationPage() {
     queryKey: ['classes'],
     queryFn: () => get<{ data: SchoolClass[] }>('/academics/classes'),
     enabled: showBulk,
+  });
+
+  const smsStatus = useQuery({
+    queryKey: ['sms-status'],
+    queryFn: () => get<SmsStatus>('/notifications/messages/status'),
+    enabled: can('communication:read'),
+  });
+
+  const refreshOutbox = () => {
+    void queryClient.invalidateQueries({ queryKey: ['messages'] });
+    void queryClient.invalidateQueries({ queryKey: ['sms-status'] });
+  };
+
+  const dispatchNow = useMutation({
+    mutationFn: () =>
+      post<{ attempted: number; sent: number; failed: number; skipped: boolean }>(
+        '/notifications/messages/dispatch',
+      ),
+    onSuccess: (r) => {
+      refreshOutbox();
+      setNotice(
+        r.skipped
+          ? 'No SMS provider is configured, so nothing was sent.'
+          : `Dispatched ${r.attempted}: ${r.sent} sent, ${r.failed} failed.`,
+      );
+    },
+  });
+
+  const retryFailed = useMutation({
+    mutationFn: () =>
+      post<{ requeued: number; sent: number; failed: number }>(
+        '/notifications/messages/retry-failed',
+      ),
+    onSuccess: (r) => {
+      refreshOutbox();
+      setNotice(`Requeued ${r.requeued} — ${r.sent} sent, ${r.failed} still failing.`);
+    },
   });
 
   const announcementForm = useForm<AnnouncementForm>({
@@ -200,40 +249,121 @@ export function CommunicationPage() {
         ))}
 
       {tab === 'outbox' && (
-        <Card padded={false}>
-          {messages.isLoading ? (
-            <Spinner />
-          ) : messages.data?.data.length === 0 ? (
-            <EmptyState title="No messages sent yet" />
-          ) : (
-            <TableWrap>
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Sent</th>
-                    <th>Channel</th>
-                    <th>Recipient</th>
-                    <th>Message</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {messages.data?.data.map((m) => (
-                    <tr key={m.id}>
-                      <td className="whitespace-nowrap text-xs">{dateTime(m.createdAt)}</td>
-                      <td>{m.channel}</td>
-                      <td className="font-mono text-xs">{m.recipient}</td>
-                      <td className="max-w-md truncate text-slate-600">{m.body}</td>
-                      <td>
-                        <Badge status={m.status} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </TableWrap>
+        <>
+          {smsStatus.data && (
+            <Card className="mb-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-slate-800">
+                    {smsStatus.data.configured ? (
+                      <>
+                        SMS gateway: {titleCase(smsStatus.data.provider)}
+                        {smsStatus.data.sandbox && (
+                          <span className="badge ml-2 bg-amber-100 text-amber-800">Sandbox</span>
+                        )}
+                      </>
+                    ) : (
+                      'No SMS gateway configured'
+                    )}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {smsStatus.data.configured
+                      ? `Sender ID ${smsStatus.data.senderId} · up to ${smsStatus.data.maxAttempts} attempts per message`
+                      : 'Messages are recorded here but not delivered. Set SMS_PROVIDER and its credentials to enable sending.'}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                    {Object.entries(smsStatus.data.counts).map(([status, count]) => (
+                      <span key={status} className={`badge ${statusTone(status)}`}>
+                        {titleCase(status)}: {count}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {can('communication:send') && smsStatus.data.configured && (
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      disabled={dispatchNow.isPending}
+                      onClick={() => dispatchNow.mutate()}
+                    >
+                      {dispatchNow.isPending ? 'Sending…' : 'Send queued now'}
+                    </button>
+                    {(smsStatus.data.counts.FAILED ?? 0) > 0 && (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={retryFailed.isPending}
+                        onClick={() => retryFailed.mutate()}
+                      >
+                        Retry failed
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Card>
           )}
-        </Card>
+
+          {(dispatchNow.error ?? retryFailed.error) != null && (
+            <div className="mb-4">
+              <ErrorNote error={dispatchNow.error ?? retryFailed.error} />
+            </div>
+          )}
+
+          <Card padded={false}>
+            {messages.isLoading ? (
+              <Spinner />
+            ) : messages.data?.data.length === 0 ? (
+              <EmptyState title="No messages sent yet" />
+            ) : (
+              <TableWrap>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Queued</th>
+                      <th>Channel</th>
+                      <th>Recipient</th>
+                      <th>Message</th>
+                      <th>Status</th>
+                      <th className="text-right">Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {messages.data?.data.map((m) => (
+                      <tr key={m.id}>
+                        <td className="whitespace-nowrap text-xs">{dateTime(m.createdAt)}</td>
+                        <td>{m.channel}</td>
+                        <td className="font-mono text-xs">{m.recipient}</td>
+                        <td className="max-w-md truncate text-slate-600">{m.body}</td>
+                        <td>
+                          <Badge status={m.status} />
+                          {m.error && (
+                            <span
+                              className="block max-w-[16rem] truncate text-xs text-red-600"
+                              title={m.error}
+                            >
+                              {m.error}
+                            </span>
+                          )}
+                          {m.attempts > 1 && (
+                            <span className="block text-xs text-slate-400">
+                              {m.attempts} attempts
+                            </span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap text-right text-xs text-slate-500">
+                          {m.cost ?? '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableWrap>
+            )}
+          </Card>
+        </>
       )}
 
       {showAnnouncement && (

@@ -1,11 +1,16 @@
 import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { disconnect, prisma } from './db/prisma.js';
+import { startSmsWorker, stopSmsWorker } from './modules/communication/dispatcher.js';
 
 async function main(): Promise<void> {
   await prisma.$connect();
 
   const app = createApp();
+
+  // Retries and anything the fire-and-forget nudge missed still go out.
+  startSmsWorker();
+
   const server = app.listen(env.PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`SMS API listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);
@@ -14,6 +19,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     // eslint-disable-next-line no-console
     console.log(`\n${signal} received, shutting down...`);
+    stopSmsWorker();
     server.close(async () => {
       await disconnect();
       process.exit(0);
