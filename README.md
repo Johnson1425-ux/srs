@@ -392,6 +392,11 @@ treated as off rather than failing at the first send.
 `SMS_SENDER_ID`. A live alphanumeric sender ID has to be registered with Africa's
 Talking first; leave it blank to fall back to the account default.
 
+> **The sandbox rejects sender IDs entirely.** With `AFRICASTALKING_SANDBOX=true`,
+> set `SMS_SENDER_ID=` and clear the school's own sender ID under Settings, or
+> every send fails with `InvalidSenderId`. The Message log warns about this
+> before you send.
+
 **How sending works.** Queueing a message nudges a dispatcher that runs outside
 the request, so a bulk send to several hundred parents does not hold the HTTP
 response open. A worker also sweeps every 60 seconds to pick up retries. Messages

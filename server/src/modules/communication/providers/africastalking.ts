@@ -49,6 +49,27 @@ interface AtResponse {
   };
 }
 
+/**
+ * Some failures are reported once for the whole request instead of per
+ * recipient — an unregistered sender ID being the common one — and arrive as
+ * text in `Message` with an empty `Recipients`. Retrying those is pointless
+ * until a human changes a setting, so they are matched by name.
+ */
+const PERMANENT_MESSAGES = [
+  'invalidsenderid',
+  'invalidphonenumber',
+  'userdoesnotexist',
+  'invalidapikey',
+  'authentication',
+  'subscriptionnotfound',
+  'blacklisted',
+];
+
+function messageLevelRetryable(message: string): boolean {
+  const normalized = message.toLowerCase().replace(/[^a-z]/g, '');
+  return !PERMANENT_MESSAGES.some((m) => normalized.includes(m));
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -154,8 +175,10 @@ export class AfricasTalkingProvider implements SmsProvider {
 
     const reported = payload.SMSMessageData?.Recipients ?? [];
     if (reported.length === 0) {
-      // The gateway accepted nothing and said why in Message, e.g. no credit.
-      return failAll(payload.SMSMessageData?.Message ?? 'Gateway accepted no recipients', true);
+      // The gateway accepted nothing and said why in Message — an empty balance
+      // (worth retrying) or a rejected sender ID (not, until someone fixes it).
+      const message = payload.SMSMessageData?.Message ?? 'Gateway accepted no recipients';
+      return failAll(message, messageLevelRetryable(message));
     }
 
     const byNumber = new Map(reported.map((r) => [r.number ?? '', r]));

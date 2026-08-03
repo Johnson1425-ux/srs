@@ -290,17 +290,29 @@ communicationRouter.get(
   asyncHandler(async (req, res) => {
     const schoolId = schoolIdOf(req);
 
-    const counts = await prisma.message.groupBy({
-      by: ['status'],
-      where: { schoolId, channel: MessageChannel.SMS },
-      _count: { _all: true },
-    });
+    const [counts, school] = await Promise.all([
+      prisma.message.groupBy({
+        by: ['status'],
+        where: { schoolId, channel: MessageChannel.SMS },
+        _count: { _all: true },
+      }),
+      prisma.school.findUnique({ where: { id: schoolId }, select: { smsSenderId: true } }),
+    ]);
+
+    // What this school actually sends with, not the deployment default.
+    const senderId = school?.smsSenderId || env.SMS_SENDER_ID;
 
     res.json({
       provider: env.SMS_PROVIDER,
       configured: smsConfigured,
       sandbox: env.AFRICASTALKING_SANDBOX,
-      senderId: env.SMS_SENDER_ID,
+      senderId,
+      // The sandbox has no registered sender IDs, so anything but blank is
+      // rejected outright — worth saying before a send rather than after.
+      senderIdWarning:
+        env.AFRICASTALKING_SANDBOX && senderId.trim()
+          ? `The sandbox rejects sender IDs. Clear this school's sender ID and SMS_SENDER_ID to send as the account default.`
+          : null,
       maxAttempts: env.SMS_MAX_ATTEMPTS,
       counts: Object.fromEntries(counts.map((c) => [c.status, c._count._all])),
     });

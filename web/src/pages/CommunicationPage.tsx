@@ -44,6 +44,7 @@ interface SmsStatus {
   configured: boolean;
   sandbox: boolean;
   senderId: string;
+  senderIdWarning: string | null;
   maxAttempts: number;
   counts: Record<string, number>;
 }
@@ -268,9 +269,12 @@ export function CommunicationPage() {
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
                     {smsStatus.data.configured
-                      ? `Sender ID ${smsStatus.data.senderId} · up to ${smsStatus.data.maxAttempts} attempts per message`
+                      ? `${smsStatus.data.senderId ? `Sender ID ${smsStatus.data.senderId}` : 'Sending as the account default'} · up to ${smsStatus.data.maxAttempts} attempts per message`
                       : 'Messages are recorded here but not delivered. Set SMS_PROVIDER and its credentials to enable sending.'}
                   </p>
+                  {smsStatus.data.senderIdWarning != null && (
+                    <p className="mt-1 text-xs text-amber-700">{smsStatus.data.senderIdWarning}</p>
+                  )}
                   <div className="mt-2 flex flex-wrap gap-2 text-xs">
                     {Object.entries(smsStatus.data.counts).map(([status, count]) => (
                       <span key={status} className={`badge ${statusTone(status)}`}>

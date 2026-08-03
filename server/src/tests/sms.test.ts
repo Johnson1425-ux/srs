@@ -268,6 +268,51 @@ describe("Africa's Talking request and response handling", () => {
     expect(results[1]).toMatchObject({ accepted: false, retryable: true });
   });
 
+  it('does not retry a rejected sender ID reported for the whole request', async () => {
+    // A bad sender ID comes back once for the request, not per recipient.
+    fetchMock.mockReturnValue(
+      ok({ SMSMessageData: { Message: 'InvalidSenderId', Recipients: [] } }),
+    );
+
+    const results = await new AfricasTalkingProvider('u', 'k', false).send(
+      [
+        { recipient: '+255754000001', body: 'x' },
+        { recipient: '+255754000002', body: 'x' },
+      ],
+      'SCHOOL',
+    );
+
+    expect(results).toHaveLength(2);
+    for (const r of results) {
+      expect(r).toMatchObject({ accepted: false, retryable: false });
+      expect(r.error).toContain('InvalidSenderId');
+    }
+  });
+
+  it('does retry an empty balance reported for the whole request', async () => {
+    fetchMock.mockReturnValue(
+      ok({ SMSMessageData: { Message: 'InsufficientBalance', Recipients: [] } }),
+    );
+
+    const results = await new AfricasTalkingProvider('u', 'k', false).send(
+      [{ recipient: '+255754000001', body: 'x' }],
+      'SHULE',
+    );
+    expect(results[0]).toMatchObject({ accepted: false, retryable: true });
+  });
+
+  it('omits the sender ID when blank, as the sandbox requires', async () => {
+    fetchMock.mockReturnValue(ok({ SMSMessageData: { Recipients: [] } }));
+
+    await new AfricasTalkingProvider('u', 'k', true).send(
+      [{ recipient: '+255754000001', body: 'x' }],
+      '   ',
+    );
+
+    const form = new URLSearchParams(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(form.has('from')).toBe(false);
+  });
+
   it('treats bad credentials as permanent and a timeout as retryable', async () => {
     fetchMock.mockReturnValue(
       Promise.resolve({
