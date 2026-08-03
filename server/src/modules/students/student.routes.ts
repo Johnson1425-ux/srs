@@ -5,6 +5,7 @@ import { prisma } from '../../db/prisma.js';
 import { asyncHandler, paginate, paginationSchema, skipTake, validate } from '../../lib/http.js';
 import { requirePermission, schoolIdOf } from '../../middleware/auth.js';
 import { audit } from '../../lib/audit.js';
+import { notFound } from '../../lib/errors.js';
 import * as service from './student.service.js';
 
 /** Module 4 — Student Management. */
@@ -205,6 +206,24 @@ studentRouter.post(
   }),
 );
 
+/** List the guardians linked to a student. */
+studentRouter.get(
+  '/:id/guardians',
+  requirePermission('students:read', 'guardians:read'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const studentId = req.params.id as string;
+    await service.getStudent(schoolId, studentId);
+
+    const data = await prisma.studentGuardian.findMany({
+      where: { studentId },
+      include: { guardian: true },
+      orderBy: { isPrimary: 'desc' },
+    });
+    res.json({ data });
+  }),
+);
+
 /** Link an existing guardian to a student. */
 studentRouter.post(
   '/:id/guardians',
@@ -219,14 +238,75 @@ studentRouter.post(
   asyncHandler(async (req, res) => {
     const schoolId = schoolIdOf(req);
     const studentId = req.params.id as string;
+    const { guardianId, isPrimary, isFeePayer } = req.body as {
+      guardianId: string;
+      isPrimary: boolean;
+      isFeePayer: boolean;
+    };
+
     await service.getStudent(schoolId, studentId);
 
-    const link = await prisma.studentGuardian.upsert({
-      where: { studentId_guardianId: { studentId, guardianId: req.body.guardianId } },
-      create: { studentId, ...req.body },
-      update: { isPrimary: req.body.isPrimary, isFeePayer: req.body.isFeePayer },
-      include: { guardian: true },
+    // The guardian must belong to this school too. Without this check a caller
+    // could link another tenant's parent by id, and that parent's portal would
+    // then expose a child they have no relationship to.
+    const guardian = await prisma.guardian.findFirst({ where: { id: guardianId, schoolId } });
+    if (!guardian) throw notFound('Parent');
+
+    const link = await prisma.$transaction(async (tx) => {
+      // A student has at most one primary contact and one fee payer.
+      if (isPrimary) {
+        await tx.studentGuardian.updateMany({
+          where: { studentId, guardianId: { not: guardianId } },
+          data: { isPrimary: false },
+        });
+      }
+      if (isFeePayer) {
+        await tx.studentGuardian.updateMany({
+          where: { studentId, guardianId: { not: guardianId } },
+          data: { isFeePayer: false },
+        });
+      }
+
+      return tx.studentGuardian.upsert({
+        where: { studentId_guardianId: { studentId, guardianId } },
+        create: { studentId, guardianId, isPrimary, isFeePayer },
+        update: { isPrimary, isFeePayer },
+        include: { guardian: true },
+      });
+    });
+
+    await audit(req, {
+      action: 'student.guardian_link',
+      entityType: 'Student',
+      entityId: studentId,
+      metadata: { guardianId, isPrimary, isFeePayer },
     });
     res.status(201).json(link);
+  }),
+);
+
+/** Unlink a guardian, for when the wrong parent was attached. */
+studentRouter.delete(
+  '/:id/guardians/:guardianId',
+  requirePermission('students:manage', 'guardians:manage'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const studentId = req.params.id as string;
+    const guardianId = req.params.guardianId as string;
+
+    await service.getStudent(schoolId, studentId);
+
+    const removed = await prisma.studentGuardian.deleteMany({
+      where: { studentId, guardianId, guardian: { schoolId } },
+    });
+    if (removed.count === 0) throw notFound('Parent link');
+
+    await audit(req, {
+      action: 'student.guardian_unlink',
+      entityType: 'Student',
+      entityId: studentId,
+      metadata: { guardianId },
+    });
+    res.status(204).send();
   }),
 );

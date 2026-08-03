@@ -376,6 +376,119 @@ describe('student lifecycle', () => {
     expect(links).toBe(2);
   });
 
+  it('links an existing parent to a student admitted without one', async () => {
+    const student = await request(app)
+      .post('/api/v1/students')
+      .set(authed(token))
+      .send({
+        firstName: 'Orphaned',
+        lastName: 'Record',
+        gender: 'MALE',
+        dateOfBirth: '2013-06-06',
+        classId: fixture.classId,
+      });
+    expect(student.body.student.guardianLinks).toHaveLength(0);
+
+    const parent = await request(app)
+      .post('/api/v1/parents')
+      .set(authed(token))
+      .send({
+        firstName: 'Later',
+        lastName: 'Guardian',
+        relationship: 'Father',
+        phone: '0788222333',
+      });
+    expect(parent.status).toBe(201);
+
+    const link = await request(app)
+      .post(`/api/v1/students/${student.body.student.id}/guardians`)
+      .set(authed(token))
+      .send({ guardianId: parent.body.id, isPrimary: true, isFeePayer: true });
+
+    expect(link.status).toBe(201);
+
+    const after = await request(app)
+      .get(`/api/v1/students/${student.body.student.id}`)
+      .set(authed(token));
+    expect(after.body.guardianLinks).toHaveLength(1);
+    expect(after.body.guardianLinks[0].guardian.phone).toBe('0788222333');
+  });
+
+  it('moves the primary flag rather than allowing two', async () => {
+    const studentId = fixture.students[2]!.id;
+
+    const [first, second] = await Promise.all([
+      request(app).post('/api/v1/parents').set(authed(token)).send({
+        firstName: 'First', lastName: 'Contact', relationship: 'Mother', phone: '0788300001',
+      }),
+      request(app).post('/api/v1/parents').set(authed(token)).send({
+        firstName: 'Second', lastName: 'Contact', relationship: 'Father', phone: '0788300002',
+      }),
+    ]);
+
+    for (const parent of [first, second]) {
+      const res = await request(app)
+        .post(`/api/v1/students/${studentId}/guardians`)
+        .set(authed(token))
+        .send({ guardianId: parent.body.id, isPrimary: true });
+      expect(res.status).toBe(201);
+    }
+
+    const after = await request(app).get(`/api/v1/students/${studentId}`).set(authed(token));
+    const primaries = after.body.guardianLinks.filter((l: { isPrimary: boolean }) => l.isPrimary);
+    expect(primaries).toHaveLength(1);
+    expect(primaries[0].guardian.phone).toBe('0788300002');
+  });
+
+  it('unlinks a parent attached by mistake', async () => {
+    const studentId = fixture.students[0]!.id;
+
+    const parent = await request(app).post('/api/v1/parents').set(authed(token)).send({
+      firstName: 'Wrong', lastName: 'Parent', relationship: 'Guardian', phone: '0788400001',
+    });
+
+    await request(app)
+      .post(`/api/v1/students/${studentId}/guardians`)
+      .set(authed(token))
+      .send({ guardianId: parent.body.id });
+
+    const removed = await request(app)
+      .delete(`/api/v1/students/${studentId}/guardians/${parent.body.id}`)
+      .set(authed(token));
+    expect(removed.status).toBe(204);
+
+    const after = await request(app).get(`/api/v1/students/${studentId}`).set(authed(token));
+    const ids = after.body.guardianLinks.map((l: { guardian: { id: string } }) => l.guardian.id);
+    expect(ids).not.toContain(parent.body.id);
+
+    // The parent record itself survives — only the relationship was removed.
+    const stillThere = await request(app)
+      .get(`/api/v1/parents/${parent.body.id}`)
+      .set(authed(token));
+    expect(stillThere.status).toBe(200);
+  });
+
+  it('refuses to link a parent belonging to another school', async () => {
+    const other = await createSchoolFixture();
+    const otherToken = await login(other.users.admin!.email);
+
+    const foreignParent = await request(app)
+      .post('/api/v1/parents')
+      .set(authed(otherToken))
+      .send({
+        firstName: 'Foreign', lastName: 'Parent', relationship: 'Mother', phone: '0788500001',
+      });
+    expect(foreignParent.status).toBe(201);
+
+    const res = await request(app)
+      .post(`/api/v1/students/${fixture.students[0]!.id}/guardians`)
+      .set(authed(token))
+      .send({ guardianId: foreignParent.body.id });
+
+    expect(res.status).toBe(404);
+    await destroyFixture(other);
+  });
+
   it('rejects a date of birth in the future', async () => {
     const res = await request(app)
       .post('/api/v1/students')

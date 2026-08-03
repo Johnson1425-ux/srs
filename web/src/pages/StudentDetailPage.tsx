@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
-import { get, post } from '../lib/api';
+import { del, get, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { date, fullName, money, titleCase } from '../lib/format';
 import {
@@ -14,7 +14,7 @@ import {
   Spinner,
   TableWrap,
 } from '../components/ui';
-import type { Invoice, Payment, Student } from '../lib/types';
+import type { Guardian, Invoice, Paginated, Payment, Student } from '../lib/types';
 
 interface BalanceResponse {
   summary: { totalBilled: string; totalPaid: string; balance: string; invoiceCount: number };
@@ -40,6 +40,12 @@ export function StudentDetailPage() {
   const [statusModal, setStatusModal] = useState(false);
   const [newStatus, setNewStatus] = useState('SUSPENDED');
   const [reason, setReason] = useState('');
+
+  const [linkModal, setLinkModal] = useState(false);
+  const [parentSearch, setParentSearch] = useState('');
+  const [chosenGuardian, setChosenGuardian] = useState('');
+  const [asPrimary, setAsPrimary] = useState(false);
+  const [asFeePayer, setAsFeePayer] = useState(false);
 
   const student = useQuery({
     queryKey: ['student', id],
@@ -70,6 +76,43 @@ export function StudentDetailPage() {
         }>;
       }>(`/results/transcript/${id}`),
     enabled: tab === 'Results' && can('exams:read'),
+  });
+
+  const parentResults = useQuery({
+    queryKey: ['parents', 'search', parentSearch],
+    queryFn: () =>
+      get<Paginated<Guardian>>(`/parents${qs({ search: parentSearch, pageSize: 10 })}`),
+    enabled: linkModal && parentSearch.trim().length >= 2,
+  });
+
+  const closeLinkModal = () => {
+    setLinkModal(false);
+    setParentSearch('');
+    setChosenGuardian('');
+    setAsPrimary(false);
+    setAsFeePayer(false);
+  };
+
+  const linkParent = useMutation({
+    mutationFn: () =>
+      post(`/students/${id}/guardians`, {
+        guardianId: chosenGuardian,
+        isPrimary: asPrimary,
+        isFeePayer: asFeePayer,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['student', id] });
+      void queryClient.invalidateQueries({ queryKey: ['parents'] });
+      closeLinkModal();
+    },
+  });
+
+  const unlinkParent = useMutation({
+    mutationFn: (guardianId: string) => del(`/students/${id}/guardians/${guardianId}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['student', id] });
+      void queryClient.invalidateQueries({ queryKey: ['parents'] });
+    },
   });
 
   const changeStatus = useMutation({
@@ -151,9 +194,30 @@ export function StudentDetailPage() {
             </dl>
           </Card>
 
-          <Card title="Parents and guardians">
+          <Card
+            title="Parents and guardians"
+            actions={
+              can('students:manage', 'guardians:manage') && (
+                <button
+                  type="button"
+                  className="btn-secondary px-3 py-1 text-xs"
+                  onClick={() => setLinkModal(true)}
+                >
+                  Link a parent
+                </button>
+              )
+            }
+          >
+            {unlinkParent.error != null && (
+              <div className="mb-4">
+                <ErrorNote error={unlinkParent.error} />
+              </div>
+            )}
             {s.guardianLinks.length === 0 ? (
-              <EmptyState title="No guardian linked" hint="Add a parent record for this student." />
+              <EmptyState
+                title="No guardian linked"
+                hint="Use “Link a parent” to attach an existing parent record, or create one under Parents first."
+              />
             ) : (
               <ul className="space-y-4">
                 {s.guardianLinks.map((link) => (
@@ -177,6 +241,18 @@ export function StudentDetailPage() {
                       <Detail label="Email" value={link.guardian.email ?? '—'} />
                       <Detail label="Occupation" value={link.guardian.occupation ?? '—'} />
                     </dl>
+                    {can('students:manage', 'guardians:manage') && (
+                      <div className="mt-3 border-t border-slate-100 pt-3 text-right">
+                        <button
+                          type="button"
+                          className="text-sm text-red-700 hover:underline disabled:opacity-50"
+                          disabled={unlinkParent.isPending}
+                          onClick={() => unlinkParent.mutate(link.guardian.id)}
+                        >
+                          Unlink
+                        </button>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -380,6 +456,106 @@ export function StudentDetailPage() {
             ))
           )}
         </div>
+      )}
+
+      {linkModal && (
+        <Modal title="Link a parent to this student" onClose={closeLinkModal}>
+          {linkParent.error != null && (
+            <div className="mb-4">
+              <ErrorNote error={linkParent.error} />
+            </div>
+          )}
+
+          <div className="space-y-4">
+            <div>
+              <label className="label" htmlFor="parent-search">
+                Find an existing parent
+              </label>
+              <input
+                id="parent-search"
+                className="input"
+                autoFocus
+                placeholder="Name, phone or email"
+                value={parentSearch}
+                onChange={(e) => setParentSearch(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Not registered yet? Add them under Parents first, then link them here.
+              </p>
+            </div>
+
+            {parentSearch.trim().length >= 2 && (
+              <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200">
+                {parentResults.isLoading ? (
+                  <Spinner label="Searching…" />
+                ) : parentResults.data?.data.length === 0 ? (
+                  <p className="p-4 text-sm text-slate-500">No parents match that search.</p>
+                ) : (
+                  <ul>
+                    {parentResults.data?.data.map((g) => (
+                      <li key={g.id}>
+                        <label className="flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-2 text-sm last:border-0 hover:bg-slate-50">
+                          <input
+                            type="radio"
+                            name="guardian"
+                            value={g.id}
+                            checked={chosenGuardian === g.id}
+                            onChange={() => setChosenGuardian(g.id)}
+                          />
+                          <span>
+                            <span className="font-medium">
+                              {g.firstName} {g.lastName}
+                            </span>
+                            <span className="block text-xs text-slate-400">
+                              {g.relationship} · {g.phone}
+                            </span>
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={asPrimary}
+                  onChange={(e) => setAsPrimary(e.target.checked)}
+                />
+                Primary contact
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={asFeePayer}
+                  onChange={(e) => setAsFeePayer(e.target.checked)}
+                />
+                Responsible for fees
+              </label>
+              <p className="text-xs text-slate-500">
+                A student has one primary contact and one fee payer — setting these moves them from
+                whoever holds them now.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button type="button" className="btn-secondary" onClick={closeLinkModal}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!chosenGuardian || linkParent.isPending}
+                onClick={() => linkParent.mutate()}
+              >
+                {linkParent.isPending ? 'Linking…' : 'Link parent'}
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {statusModal && (
