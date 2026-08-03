@@ -12,8 +12,10 @@ COPY server/package.json ./server/
 RUN npm ci --workspace=server --include-workspace-root
 
 COPY server ./server
-RUN npm run db:generate --workspace=server \
-    && npm run build --workspace=server
+
+# `build` generates the Prisma client before compiling — @prisma/client ships
+# as a stub until then, so tsc would fail on every model type and enum.
+RUN npm run build --workspace=server
 
 # --- runtime stage -----------------------------------------------------------
 FROM node:22-slim AS runtime
