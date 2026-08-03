@@ -25,6 +25,7 @@ const prisma = new PrismaClient();
 
 const SCHOOL_CODE = 'MLM';
 const DEMO_PASSWORD = 'Passw0rd!';
+const PERIOD_MINUTES = 40;
 
 const FIRST_NAMES_M = ['Juma', 'Baraka', 'Emmanuel', 'Hamisi', 'Frank', 'Joseph', 'Rashid', 'Elias', 'Peter', 'Iddi', 'Godfrey', 'Musa'];
 const FIRST_NAMES_F = ['Neema', 'Amina', 'Grace', 'Zawadi', 'Halima', 'Upendo', 'Rehema', 'Sophia', 'Anna', 'Fatuma', 'Devota', 'Mwajuma'];
@@ -41,6 +42,13 @@ function pick<T>(items: T[]): T {
 }
 function randInt(min: number, max: number): number {
   return Math.floor(rand() * (max - min + 1)) + min;
+}
+
+/** Adds minutes to an HH:mm time, rolling the hour over properly. */
+function addMinutes(time: string, minutes: number): string {
+  const [h, m] = time.split(':').map(Number);
+  const total = h! * 60 + m! + minutes;
+  return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
 async function main(): Promise<void> {
@@ -281,6 +289,7 @@ async function main(): Promise<void> {
   }
 
   // --- Timetable (Monday–Friday, 8 periods) ---------------------------------
+  // Period starts, with gaps at 10:00 (break) and 12:20 (lunch).
   const periods = ['08:00', '08:40', '09:20', '10:20', '11:00', '11:40', '13:00', '13:40'];
   for (const schoolClass of classes) {
     for (const stream of schoolClass.streams) {
@@ -290,8 +299,7 @@ async function main(): Promise<void> {
           const link = await prisma.classSubject.findUnique({
             where: { classId_subjectId: { classId: schoolClass.id, subjectId: subject.id } },
           });
-          const [h, m] = start.split(':').map(Number);
-          const end = `${String(h!).padStart(2, '0')}:${String(m! + 40 >= 60 ? m! - 20 : m! + 40).padStart(2, '0')}`;
+          const end = addMinutes(start, PERIOD_MINUTES);
           await prisma.timetableSlot.create({
             data: {
               schoolId: school.id,

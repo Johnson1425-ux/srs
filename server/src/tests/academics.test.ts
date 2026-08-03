@@ -110,6 +110,102 @@ describe('attendance', () => {
   });
 });
 
+describe('timetable', () => {
+  let fixture: Fixture;
+  let token: string;
+
+  beforeAll(async () => {
+    fixture = await createSchoolFixture();
+    token = await login(fixture.users.admin!.email);
+  });
+
+  afterAll(async () => {
+    await destroyFixture(fixture);
+  });
+
+  const slot = (over: Record<string, unknown> = {}) => ({
+    academicYearId: fixture.academicYearId,
+    classId: fixture.classId,
+    subjectId: fixture.subjectIds[0]!,
+    dayOfWeek: 1,
+    startTime: '08:00',
+    endTime: '08:40',
+    ...over,
+  });
+
+  it('creates a lesson', async () => {
+    const res = await request(app).post('/api/v1/academics/timetable').set(authed(token)).send(slot());
+    expect(res.status).toBe(201);
+    expect(res.body.startTime).toBe('08:00');
+    expect(res.body.endTime).toBe('08:40');
+  });
+
+  it('rejects a lesson that ends before it starts', async () => {
+    const res = await request(app)
+      .post('/api/v1/academics/timetable')
+      .set(authed(token))
+      .send(slot({ startTime: '08:40', endTime: '08:20' }));
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a lesson with no duration', async () => {
+    const res = await request(app)
+      .post('/api/v1/academics/timetable')
+      .set(authed(token))
+      .send(slot({ startTime: '09:00', endTime: '09:00' }));
+
+    expect(res.status).toBe(400);
+  });
+
+  it('will not double-book a teacher across two classes', async () => {
+    const otherClass = await prisma.schoolClass.create({
+      data: { schoolId: fixture.school.id, name: 'Form 3', level: 3 },
+    });
+
+    const first = await request(app)
+      .post('/api/v1/academics/timetable')
+      .set(authed(token))
+      .send(slot({ dayOfWeek: 2, startTime: '10:00', endTime: '10:40', teacherId: fixture.teacherStaffId }));
+    expect(first.status).toBe(201);
+
+    // Overlaps by ten minutes, in a different class.
+    const clash = await request(app)
+      .post('/api/v1/academics/timetable')
+      .set(authed(token))
+      .send(
+        slot({
+          classId: otherClass.id,
+          dayOfWeek: 2,
+          startTime: '10:30',
+          endTime: '11:10',
+          teacherId: fixture.teacherStaffId,
+        }),
+      );
+
+    expect(clash.status).toBe(400);
+    expect(clash.body.error.message).toContain('already has a lesson');
+  });
+
+  it('removes a lesson', async () => {
+    const created = await request(app)
+      .post('/api/v1/academics/timetable')
+      .set(authed(token))
+      .send(slot({ dayOfWeek: 4, startTime: '14:00', endTime: '14:40' }));
+
+    const removed = await request(app)
+      .delete(`/api/v1/academics/timetable/${created.body.id}`)
+      .set(authed(token));
+    expect(removed.status).toBe(204);
+
+    const list = await request(app)
+      .get(`/api/v1/academics/timetable?classId=${fixture.classId}`)
+      .set(authed(token));
+    const ids = list.body.data.map((s: { id: string }) => s.id);
+    expect(ids).not.toContain(created.body.id);
+  });
+});
+
 describe('examinations', () => {
   let fixture: Fixture;
   let adminToken: string;
