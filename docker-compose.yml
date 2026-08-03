@@ -42,6 +42,8 @@ services:
       # saas | standalone — see .env.example
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-saas}
       DATABASE_URL: postgresql://${POSTGRES_USER:-sms}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sms}?schema=public
+      # No pooler in this stack, so migrations use the same connection.
+      DIRECT_URL: postgresql://${POSTGRES_USER:-sms}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sms}?schema=public
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET in .env}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET in .env}

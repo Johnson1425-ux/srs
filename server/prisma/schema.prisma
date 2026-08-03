@@ -11,6 +11,13 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+
+  // Migrations and introspection need a direct connection: they issue
+  // statements a transaction-mode pooler (PgBouncer, Neon's `-pooler`
+  // endpoint, Supabase's port 6543) cannot carry. Where there is no pooler,
+  // set DIRECT_URL to the same value as DATABASE_URL — it is required either
+  // way, because Prisma resolves it at schema load.
+  directUrl = env("DIRECT_URL")
 }
 
 // ---------------------------------------------------------------------------

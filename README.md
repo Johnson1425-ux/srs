@@ -304,14 +304,42 @@ asset caching — the jobs nginx does in the self-hosted setup.
 **Vercel** — Root Directory `web`, environment variable
 `VITE_API_URL=https://your-api.onrender.com`.
 
-**Render** — Root Directory `server`, build
-`npm ci && npx prisma generate && npm run build`, start `node dist/index.js`,
-pre-deploy `npx prisma migrate deploy`. Set `DATABASE_URL`, both `JWT_*` secrets
-and `CORS_ORIGIN=https://your-app.vercel.app`. Leave `PORT` alone — Render
-injects it.
+**Render** — leave Root Directory **blank**. Render `cd`s into it and runs npm
+there, and `npm ci` fails inside `server/` because npm workspaces keep a single
+lockfile at the repository root. Address the workspace by flag instead:
 
-Prefer Render's native Node runtime over the Dockerfile; both work, but the
+| Field | Value |
+| --- | --- |
+| Build Command | `npm ci && npm run build --workspace=server` |
+| Pre-Deploy Command | `npx prisma migrate deploy --schema server/prisma/schema.prisma` |
+| Start Command | `node server/dist/index.js` |
+| Health Check Path | `/health` |
+
+Set `DATABASE_URL`, `DIRECT_URL`, both `JWT_*` secrets and
+`CORS_ORIGIN=https://your-app.vercel.app`. Leave `PORT` alone — Render injects
+it. Prefer Render's native Node runtime over the Dockerfile; both work, but the
 native runtime needs no container build.
+
+#### Connecting to a pooled database
+
+`DIRECT_URL` exists because migrations issue statements a transaction-mode
+pooler cannot carry. With no pooler, set it to the same value as
+`DATABASE_URL`. Behind one:
+
+| Provider | `DATABASE_URL` | `DIRECT_URL` |
+| --- | --- | --- |
+| **Neon** | `-pooler` host, `?sslmode=require&pgbouncer=true` | same host **without** `-pooler`, `?sslmode=require` |
+| **Supabase** | port `6543`, `?pgbouncer=true` | port `5432` |
+| **Render / plain Postgres** | Internal URL | the same URL |
+
+Do not include `channel_binding=require` in a Neon connection string — Prisma's
+connector does not support SCRAM channel binding and the connection will drop
+with `Error { kind: Closed }`.
+
+Note that the API calls `prisma.$connect()` before it listens, so an
+unreachable database means the process exits rather than serving errors. If the
+frontend reports a network failure and the logs never print
+`SMS API listening`, the connection string is the place to look.
 
 #### Optional: proxy `/api` through Vercel
 

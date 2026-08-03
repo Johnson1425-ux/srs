@@ -22,6 +22,9 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
       DATABASE_URL: testDatabaseUrl,
+      // No pooler in front of the test database, so the direct connection is
+      // the same one. Prisma requires it regardless.
+      DIRECT_URL: testDatabaseUrl,
       JWT_ACCESS_SECRET: 'test-access-secret-at-least-16-chars',
       JWT_REFRESH_SECRET: 'test-refresh-secret-at-least-16-chars',
     },
