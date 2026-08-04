@@ -27,6 +27,9 @@ export default defineConfig({
       DIRECT_URL: testDatabaseUrl,
       JWT_ACCESS_SECRET: 'test-access-secret-at-least-16-chars',
       JWT_REFRESH_SECRET: 'test-refresh-secret-at-least-16-chars',
+      // Email tests assert on the From header, which is built from this. No
+      // provider is configured, so nothing is ever actually sent.
+      SMTP_FROM: 'School System <no-reply@example.test>',
     },
   },
 });

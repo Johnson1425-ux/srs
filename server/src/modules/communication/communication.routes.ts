@@ -7,8 +7,8 @@ import { requirePermission, schoolIdOf } from '../../middleware/auth.js';
 import { audit } from '../../lib/audit.js';
 import { badRequest } from '../../lib/errors.js';
 import { normalizePhone, queueMessages, renderTemplate } from './message.service.js';
-import { dispatchQueuedSms } from './dispatcher.js';
-import { env, smsConfigured } from '../../config/env.js';
+import { dispatchQueuedEmail, dispatchQueuedSms } from './dispatcher.js';
+import { emailConfigured, env, smsConfigured } from '../../config/env.js';
 
 /** Module 16 — Communication: announcements, templates and bulk messaging. */
 export const communicationRouter: Router = Router();
@@ -283,38 +283,65 @@ communicationRouter.get(
   }),
 );
 
-/** Delivery status of the SMS gateway, for the outbox screen. */
+/** Which transports a request applies to. Absent means both. */
+const channelSchema = z.object({
+  body: z.object({
+    channel: z.enum([MessageChannel.SMS, MessageChannel.EMAIL]).optional(),
+  }),
+});
+
+const countsFor = async (schoolId: string, channel: MessageChannel) => {
+  const rows = await prisma.message.groupBy({
+    by: ['status'],
+    where: { schoolId, channel },
+    _count: { _all: true },
+  });
+  return Object.fromEntries(rows.map((c) => [c.status, c._count._all]));
+};
+
+/** Delivery status of both transports, for the outbox screen. */
 communicationRouter.get(
   '/messages/status',
   requirePermission('communication:read'),
   asyncHandler(async (req, res) => {
     const schoolId = schoolIdOf(req);
 
-    const [counts, school] = await Promise.all([
-      prisma.message.groupBy({
-        by: ['status'],
-        where: { schoolId, channel: MessageChannel.SMS },
-        _count: { _all: true },
+    const [smsCounts, emailCounts, school] = await Promise.all([
+      countsFor(schoolId, MessageChannel.SMS),
+      countsFor(schoolId, MessageChannel.EMAIL),
+      prisma.school.findUnique({
+        where: { id: schoolId },
+        select: { smsSenderId: true, email: true },
       }),
-      prisma.school.findUnique({ where: { id: schoolId }, select: { smsSenderId: true } }),
     ]);
 
     // What this school actually sends with, not the deployment default.
     const senderId = school?.smsSenderId || env.SMS_SENDER_ID;
 
     res.json({
-      provider: env.SMS_PROVIDER,
-      configured: smsConfigured,
-      sandbox: env.AFRICASTALKING_SANDBOX,
-      senderId,
-      // The sandbox has no registered sender IDs, so anything but blank is
-      // rejected outright — worth saying before a send rather than after.
-      senderIdWarning:
-        env.AFRICASTALKING_SANDBOX && senderId.trim()
-          ? `The sandbox rejects sender IDs. Clear this school's sender ID and SMS_SENDER_ID to send as the account default.`
-          : null,
-      maxAttempts: env.SMS_MAX_ATTEMPTS,
-      counts: Object.fromEntries(counts.map((c) => [c.status, c._count._all])),
+      sms: {
+        provider: env.SMS_PROVIDER,
+        configured: smsConfigured,
+        sandbox: env.AFRICASTALKING_SANDBOX,
+        senderId,
+        // The sandbox has no registered sender IDs, so anything but blank is
+        // rejected outright — worth saying before a send rather than after.
+        senderIdWarning:
+          env.AFRICASTALKING_SANDBOX && senderId.trim()
+            ? `The sandbox rejects sender IDs. Clear this school's sender ID and SMS_SENDER_ID to send as the account default.`
+            : null,
+        maxAttempts: env.SMS_MAX_ATTEMPTS,
+        counts: smsCounts,
+      },
+      email: {
+        provider: env.EMAIL_PROVIDER,
+        configured: emailConfigured,
+        from: env.SMTP_FROM ?? null,
+        // Replies go to the school, not the relay — blank if it has no address.
+        replyTo: school?.email ?? null,
+        maxAttempts: env.EMAIL_MAX_ATTEMPTS,
+        counts: emailCounts,
+      },
     });
   }),
 );
@@ -323,33 +350,54 @@ communicationRouter.get(
 communicationRouter.post(
   '/messages/dispatch',
   requirePermission('communication:send'),
+  validate(channelSchema),
   asyncHandler(async (req, res) => {
-    const summary = await dispatchQueuedSms();
-    await audit(req, { action: 'message.dispatch', metadata: { ...summary } });
+    const { channel } = req.body as { channel?: MessageChannel };
+
+    const summary = {
+      sms: channel === MessageChannel.EMAIL ? null : await dispatchQueuedSms(),
+      email: channel === MessageChannel.SMS ? null : await dispatchQueuedEmail(),
+    };
+
+    await audit(req, { action: 'message.dispatch', metadata: { channel: channel ?? 'ALL' } });
     res.json(summary);
   }),
 );
 
 /**
  * Put failed messages back in the queue. Used after fixing whatever caused the
- * failure — topping up credit, correcting a sender ID — since those messages
- * have exhausted their attempts and will not be picked up on their own.
+ * failure — topping up credit, correcting a sender ID, pointing SMTP at the
+ * right host — since those messages have exhausted their attempts and will not
+ * be picked up on their own.
  */
 communicationRouter.post(
   '/messages/retry-failed',
   requirePermission('communication:send'),
+  validate(channelSchema),
   asyncHandler(async (req, res) => {
     const schoolId = schoolIdOf(req);
+    const { channel } = req.body as { channel?: MessageChannel };
 
     const result = await prisma.message.updateMany({
-      where: { schoolId, channel: MessageChannel.SMS, status: MessageStatus.FAILED },
+      where: {
+        schoolId,
+        status: MessageStatus.FAILED,
+        channel: channel ?? { in: [MessageChannel.SMS, MessageChannel.EMAIL] },
+      },
       data: { status: MessageStatus.QUEUED, attempts: 0, error: null },
     });
 
-    await audit(req, { action: 'message.retry_failed', metadata: { requeued: result.count } });
+    await audit(req, {
+      action: 'message.retry_failed',
+      metadata: { requeued: result.count, channel: channel ?? 'ALL' },
+    });
 
-    const summary = await dispatchQueuedSms();
-    res.json({ requeued: result.count, ...summary });
+    const summary = {
+      requeued: result.count,
+      sms: channel === MessageChannel.EMAIL ? null : await dispatchQueuedSms(),
+      email: channel === MessageChannel.SMS ? null : await dispatchQueuedEmail(),
+    };
+    res.json(summary);
   }),
 );
 

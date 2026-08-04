@@ -366,9 +366,8 @@ would break every deployment that forgot to edit it.
    assumes HTTPS everywhere (PRD section 6). Vercel and Render do this for you.
 2. Set strong `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` values. Rotating them
    invalidates all sessions.
-3. Configure SMS (below) and `SMTP_*`. **Email is still outbox-only** — messages
-   are recorded with status `QUEUED` and nothing is dispatched until a transport
-   is implemented.
+3. Configure SMS and email (both below). Left at their `none` defaults, messages
+   are recorded with status `QUEUED` and nothing is dispatched.
 4. Schedule `pg_dump` for the daily backups the PRD requires.
 5. The API is stateless, so it scales horizontally behind the proxy.
 
@@ -418,6 +417,48 @@ per message.
 
 `AFRICASTALKING_BASE_URL` overrides the endpoint, for an outbound proxy or a
 stub during testing.
+
+### Email over SMTP
+
+```
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.your-provider.com
+SMTP_PORT=587                              # 465 needs SMTP_SECURE=true
+SMTP_SECURE=false
+SMTP_USER=                                 # optional on an internal relay
+SMTP_PASSWORD=
+SMTP_FROM="School System <no-reply@yourdomain.ac.tz>"
+EMAIL_MAX_ATTEMPTS=3
+```
+
+`EMAIL_PROVIDER=none` is the default. A host without a `SMTP_FROM` counts as
+unconfigured, because most receiving servers reject a message with no From.
+
+**Whose address it sends from.** Every school sends from the one configured
+`SMTP_FROM` address, because that is what the relay is authorised to use and
+what SPF and DKIM are aligned to — putting each school's own address there
+would get the mail rejected or filed as spam. What *is* per school is the
+display name and the reply address:
+
+```
+From:     "Mlimani Secondary School" <no-reply@yourdomain.ac.tz>
+Reply-To: info@mlimani.ac.tz          # the school's address, from Settings
+```
+
+A parent replying reaches the school, not the platform. A school with no email
+address set gets no `Reply-To`, and the Message log says so.
+
+**Sending and retries** work exactly as they do for SMS: queueing nudges a
+dispatcher outside the request, a worker sweeps every 60 seconds, and messages
+are claimed before they go out so overlapping sweeps cannot send twice. A
+mail server's reply code decides whether a failure is worth repeating — 5xx
+("no such mailbox") fails immediately, 4xx ("try later") and dropped
+connections are requeued until `EMAIL_MAX_ATTEMPTS`. Bad credentials (`EAUTH`)
+count as permanent, since retrying cannot fix them.
+
+Connections are pooled, so a bulk send opens a handful rather than one per
+parent. Messages go out one at a time: mail servers rate-limit a burst from a
+single client more readily than a steady stream.
 
 ---
 
@@ -483,9 +524,8 @@ Stated plainly, with reasons:
    place, but no live M-Pesa/Airtel/Mixx/HaloPesa API calls are made — those need
    merchant credentials. The PRD places this in Phase 3.
 
-   SMS **is** wired up, against Africa's Talking — see the deployment section.
-   Email is not: SMTP settings are read but no transport is implemented, so
-   email messages stay in the outbox.
+   SMS and email **are** wired up — Africa's Talking and SMTP respectively.
+   See the deployment section.
 
 5. **File uploads.** The document module records metadata and a storage URL; the
    binary upload path to S3/Azure Blob is not wired up, so `STORAGE_DRIVER` is

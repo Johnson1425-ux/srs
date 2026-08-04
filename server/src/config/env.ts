@@ -47,11 +47,24 @@ const schema = z.object({
   /** Overrides the gateway endpoint — for an outbound proxy, or a stub in testing. */
   AFRICASTALKING_BASE_URL: z.string().url().optional(),
 
+  // `none` keeps email in the outbox without dispatching, mirroring SMS.
+  EMAIL_PROVIDER: z.enum(['none', 'smtp']).default('none'),
+  EMAIL_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+
   SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
+  /** The From header, e.g. `Mlimani Secondary <no-reply@mlimani.ac.tz>`. */
   SMTP_FROM: z.string().optional(),
+  /**
+   * Implicit TLS from the first byte, which is port 465. Port 587 starts in
+   * the clear and upgrades with STARTTLS, so it wants this off.
+   */
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 
   STORAGE_DRIVER: z.enum(['local', 's3', 'azure']).default('local'),
   STORAGE_LOCAL_PATH: z.string().default('./uploads'),
@@ -78,6 +91,15 @@ export const isTest = env.NODE_ENV === 'test';
 export const smsConfigured =
   env.SMS_PROVIDER === 'africastalking' &&
   Boolean(env.AFRICASTALKING_USERNAME && env.AFRICASTALKING_API_KEY);
+
+/**
+ * Email needs a host to connect to and an address to send from. Credentials
+ * are optional — an internal relay on the same network often takes mail
+ * without authenticating — but a From header is not, since most receiving
+ * servers reject a message that has none.
+ */
+export const emailConfigured =
+  env.EMAIL_PROVIDER === 'smtp' && Boolean(env.SMTP_HOST && env.SMTP_FROM);
 
 /** A single school running its own installation — no plans, no platform admin. */
 export const isStandalone = env.DEPLOYMENT_MODE === 'standalone';

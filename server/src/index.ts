@@ -1,7 +1,7 @@
 import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { disconnect, prisma } from './db/prisma.js';
-import { startSmsWorker, stopSmsWorker } from './modules/communication/dispatcher.js';
+import { startMessageWorker, stopMessageWorker } from './modules/communication/dispatcher.js';
 
 async function main(): Promise<void> {
   await prisma.$connect();
@@ -9,7 +9,7 @@ async function main(): Promise<void> {
   const app = createApp();
 
   // Retries and anything the fire-and-forget nudge missed still go out.
-  startSmsWorker();
+  startMessageWorker();
 
   const server = app.listen(env.PORT, () => {
     // eslint-disable-next-line no-console
@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     // eslint-disable-next-line no-console
     console.log(`\n${signal} received, shutting down...`);
-    stopSmsWorker();
+    stopMessageWorker();
     server.close(async () => {
       await disconnect();
       process.exit(0);

@@ -1,6 +1,6 @@
 import { MessageChannel, MessageStatus } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
-import { env, smsConfigured } from '../../config/env.js';
+import { emailConfigured, smsConfigured } from '../../config/env.js';
 import { nudgeDispatcher } from './dispatcher.js';
 
 export interface OutboundMessage {
@@ -24,7 +24,7 @@ export function renderTemplate(template: string, vars: Record<string, string | n
 
 function transportConfigured(channel: MessageChannel): boolean {
   if (channel === MessageChannel.SMS) return smsConfigured;
-  if (channel === MessageChannel.EMAIL) return Boolean(env.SMTP_HOST);
+  if (channel === MessageChannel.EMAIL) return emailConfigured;
   return true; // IN_APP and PUSH are served from the database
 }
 
@@ -70,10 +70,13 @@ export async function queueMessages(
     });
   }
 
-  // Hand the SMS off to the dispatcher without waiting: a bulk send of several
-  // hundred must not hold the request open while the gateway works through it.
+  // Hand off to the dispatcher without waiting: a bulk send of several hundred
+  // must not hold the request open while the gateway works through it.
   if (smsConfigured && messages.some((m) => m.channel === MessageChannel.SMS)) {
-    nudgeDispatcher();
+    nudgeDispatcher(MessageChannel.SMS);
+  }
+  if (emailConfigured && messages.some((m) => m.channel === MessageChannel.EMAIL)) {
+    nudgeDispatcher(MessageChannel.EMAIL);
   }
 
   return { queued: messages.length, dispatched: inApp.length };

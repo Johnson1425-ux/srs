@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { get, post } from '../lib/api';
@@ -39,14 +39,132 @@ interface Message {
   cost: string | null;
 }
 
-interface SmsStatus {
+interface ChannelStatus {
   provider: string;
   configured: boolean;
-  sandbox: boolean;
-  senderId: string;
-  senderIdWarning: string | null;
   maxAttempts: number;
   counts: Record<string, number>;
+}
+
+interface DeliveryStatus {
+  sms: ChannelStatus & { sandbox: boolean; senderId: string; senderIdWarning: string | null };
+  email: ChannelStatus & { from: string | null; replyTo: string | null };
+}
+
+interface DispatchSummary {
+  attempted: number;
+  sent: number;
+  failed: number;
+  skipped: boolean;
+}
+
+interface DispatchResult {
+  sms: DispatchSummary | null;
+  email: DispatchSummary | null;
+}
+
+/** Just enough of a mutation to drive one card's two buttons. */
+interface ChannelMutation {
+  mutate: (channel: 'SMS' | 'EMAIL') => void;
+  isPending: boolean;
+  variables?: 'SMS' | 'EMAIL';
+}
+
+/**
+ * One transport's state and controls. SMS and email fail for different reasons
+ * and are configured separately, so each gets its own queue counts and its own
+ * send button rather than a combined one that hides which half is broken.
+ */
+function TransportCard({
+  title,
+  channel,
+  status,
+  heading,
+  detail,
+  warning,
+  unconfigured,
+  canSend,
+  dispatch,
+  retry,
+}: {
+  title: string;
+  channel: 'SMS' | 'EMAIL';
+  status: ChannelStatus;
+  heading: ReactNode;
+  detail: string;
+  warning: string | null;
+  unconfigured: string;
+  canSend: boolean;
+  dispatch: ChannelMutation;
+  retry: ChannelMutation;
+}) {
+  // Only the card that was clicked should say "Sending…".
+  const sending = dispatch.isPending && dispatch.variables === channel;
+  const retrying = retry.isPending && retry.variables === channel;
+  const failed = status.counts.FAILED ?? 0;
+
+  return (
+    <Card>
+      <p className="text-sm font-medium text-slate-800">
+        {status.configured ? heading : `No ${title} configured`}
+      </p>
+      <p className="mt-1 text-xs text-slate-500">
+        {status.configured
+          ? `${detail} · up to ${status.maxAttempts} attempts per message`
+          : unconfigured}
+      </p>
+      {warning != null && <p className="mt-1 text-xs text-amber-700">{warning}</p>}
+
+      <div className="mt-2 flex flex-wrap gap-2 text-xs">
+        {Object.entries(status.counts).length === 0 ? (
+          <span className="text-xs text-slate-400">Nothing queued</span>
+        ) : (
+          Object.entries(status.counts).map(([state, count]) => (
+            <span key={state} className={`badge ${statusTone(state)}`}>
+              {titleCase(state)}: {count}
+            </span>
+          ))
+        )}
+      </div>
+
+      {canSend && status.configured && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={sending}
+            onClick={() => dispatch.mutate(channel)}
+          >
+            {sending ? 'Sending…' : 'Send queued now'}
+          </button>
+          {failed > 0 && (
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={retrying}
+              onClick={() => retry.mutate(channel)}
+            >
+              {retrying ? 'Retrying…' : `Retry ${failed} failed`}
+            </button>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** Folds a per-channel dispatch response into one line for the notice bar. */
+function summarise(result: DispatchResult, prefix = ''): string {
+  const parts = (['sms', 'email'] as const)
+    .map((channel) => ({ channel, summary: result[channel] }))
+    .filter((c) => c.summary != null && !c.summary.skipped && c.summary.attempted > 0)
+    .map(
+      ({ channel, summary }) =>
+        `${channel === 'sms' ? 'SMS' : 'Email'}: ${summary!.sent} sent, ${summary!.failed} failed`,
+    );
+
+  if (parts.length === 0) return `${prefix}Nothing was queued to send.`;
+  return prefix + parts.join(' · ');
 }
 
 interface AnnouncementForm {
@@ -90,40 +208,34 @@ export function CommunicationPage() {
     enabled: showBulk,
   });
 
-  const smsStatus = useQuery({
-    queryKey: ['sms-status'],
-    queryFn: () => get<SmsStatus>('/notifications/messages/status'),
+  const deliveryStatus = useQuery({
+    queryKey: ['delivery-status'],
+    queryFn: () => get<DeliveryStatus>('/notifications/messages/status'),
     enabled: can('communication:read'),
   });
 
   const refreshOutbox = () => {
     void queryClient.invalidateQueries({ queryKey: ['messages'] });
-    void queryClient.invalidateQueries({ queryKey: ['sms-status'] });
+    void queryClient.invalidateQueries({ queryKey: ['delivery-status'] });
   };
 
   const dispatchNow = useMutation({
-    mutationFn: () =>
-      post<{ attempted: number; sent: number; failed: number; skipped: boolean }>(
-        '/notifications/messages/dispatch',
-      ),
+    mutationFn: (channel: 'SMS' | 'EMAIL') =>
+      post<DispatchResult>('/notifications/messages/dispatch', { channel }),
     onSuccess: (r) => {
       refreshOutbox();
-      setNotice(
-        r.skipped
-          ? 'No SMS provider is configured, so nothing was sent.'
-          : `Dispatched ${r.attempted}: ${r.sent} sent, ${r.failed} failed.`,
-      );
+      setNotice(summarise(r));
     },
   });
 
   const retryFailed = useMutation({
-    mutationFn: () =>
-      post<{ requeued: number; sent: number; failed: number }>(
-        '/notifications/messages/retry-failed',
-      ),
+    mutationFn: (channel: 'SMS' | 'EMAIL') =>
+      post<DispatchResult & { requeued: number }>('/notifications/messages/retry-failed', {
+        channel,
+      }),
     onSuccess: (r) => {
       refreshOutbox();
-      setNotice(`Requeued ${r.requeued} — ${r.sent} sent, ${r.failed} still failing.`);
+      setNotice(summarise(r, `Requeued ${r.requeued} — `));
     },
   });
 
@@ -175,7 +287,7 @@ export function CommunicationPage() {
     <>
       <PageHeader
         title="Communication"
-        subtitle="Announcements, bulk SMS and the delivery log"
+        subtitle="Announcements, bulk SMS and email, and the delivery log"
         actions={
           can('communication:send') && (
             <>
@@ -251,63 +363,57 @@ export function CommunicationPage() {
 
       {tab === 'outbox' && (
         <>
-          {smsStatus.data && (
-            <Card className="mb-4">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <p className="text-sm font-medium text-slate-800">
-                    {smsStatus.data.configured ? (
-                      <>
-                        SMS gateway: {titleCase(smsStatus.data.provider)}
-                        {smsStatus.data.sandbox && (
-                          <span className="badge ml-2 bg-amber-100 text-amber-800">Sandbox</span>
-                        )}
-                      </>
-                    ) : (
-                      'No SMS gateway configured'
+          {deliveryStatus.data && (
+            <div className="mb-4 grid gap-4 lg:grid-cols-2">
+              <TransportCard
+                title="SMS gateway"
+                channel="SMS"
+                status={deliveryStatus.data.sms}
+                heading={
+                  <>
+                    SMS gateway: {titleCase(deliveryStatus.data.sms.provider)}
+                    {deliveryStatus.data.sms.sandbox && (
+                      <span className="badge ml-2 bg-amber-100 text-amber-800">Sandbox</span>
                     )}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {smsStatus.data.configured
-                      ? `${smsStatus.data.senderId ? `Sender ID ${smsStatus.data.senderId}` : 'Sending as the account default'} · up to ${smsStatus.data.maxAttempts} attempts per message`
-                      : 'Messages are recorded here but not delivered. Set SMS_PROVIDER and its credentials to enable sending.'}
-                  </p>
-                  {smsStatus.data.senderIdWarning != null && (
-                    <p className="mt-1 text-xs text-amber-700">{smsStatus.data.senderIdWarning}</p>
-                  )}
-                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                    {Object.entries(smsStatus.data.counts).map(([status, count]) => (
-                      <span key={status} className={`badge ${statusTone(status)}`}>
-                        {titleCase(status)}: {count}
-                      </span>
-                    ))}
-                  </div>
-                </div>
+                  </>
+                }
+                detail={
+                  deliveryStatus.data.sms.senderId
+                    ? `Sender ID ${deliveryStatus.data.sms.senderId}`
+                    : 'Sending as the account default'
+                }
+                warning={deliveryStatus.data.sms.senderIdWarning}
+                unconfigured="Messages are recorded here but not delivered. Set SMS_PROVIDER and its credentials to enable sending."
+                canSend={can('communication:send')}
+                dispatch={dispatchNow}
+                retry={retryFailed}
+              />
 
-                {can('communication:send') && smsStatus.data.configured && (
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      disabled={dispatchNow.isPending}
-                      onClick={() => dispatchNow.mutate()}
-                    >
-                      {dispatchNow.isPending ? 'Sending…' : 'Send queued now'}
-                    </button>
-                    {(smsStatus.data.counts.FAILED ?? 0) > 0 && (
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        disabled={retryFailed.isPending}
-                        onClick={() => retryFailed.mutate()}
-                      >
-                        Retry failed
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </Card>
+              <TransportCard
+                title="email transport"
+                channel="EMAIL"
+                status={deliveryStatus.data.email}
+                heading={<>Email: {titleCase(deliveryStatus.data.email.provider)}</>}
+                detail={
+                  deliveryStatus.data.email.from
+                    ? `From ${deliveryStatus.data.email.from}${
+                        deliveryStatus.data.email.replyTo
+                          ? ` · replies to ${deliveryStatus.data.email.replyTo}`
+                          : ''
+                      }`
+                    : 'No From address set'
+                }
+                warning={
+                  deliveryStatus.data.email.configured && !deliveryStatus.data.email.replyTo
+                    ? 'This school has no email address, so replies go to the sending account. Add one under Settings.'
+                    : null
+                }
+                unconfigured="Email is recorded here but not delivered. Set EMAIL_PROVIDER=smtp with SMTP_HOST and SMTP_FROM to enable sending."
+                canSend={can('communication:send')}
+                dispatch={dispatchNow}
+                retry={retryFailed}
+              />
+            </div>
           )}
 
           {(dispatchNow.error ?? retryFailed.error) != null && (
