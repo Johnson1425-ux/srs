@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { download, get, post, qs } from '../lib/api';
@@ -55,6 +56,7 @@ export function PaymentsPage() {
   const queryClient = useQueryClient();
   const currency = user?.school?.currency ?? 'TZS';
 
+  const [searchParams, setSearchParams] = useSearchParams();
   const [page, setPage] = useState(1);
   const [method, setMethod] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -114,6 +116,22 @@ export function PaymentsPage() {
       setReceipt(await get<Receipt>(`/payments/${result.payment.id}/receipt`));
     },
   });
+
+  /**
+   * Arriving from the outstanding-balances list, which links here with the
+   * student it was showing. Opens the form on that student so the balance the
+   * bursar was just looking at is the one being settled. The parameters are
+   * cleared afterwards, so a refresh or a back-navigation does not reopen it.
+   */
+  useEffect(() => {
+    const studentId = searchParams.get('studentId');
+    if (!studentId) return;
+
+    setSearch(searchParams.get('admissionNumber') ?? '');
+    form.setValue('studentId', studentId);
+    setShowForm(true);
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams, form]);
 
   const [receiptError, setReceiptError] = useState<unknown>(null);
 

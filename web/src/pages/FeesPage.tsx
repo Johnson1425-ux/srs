@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFieldArray, useForm } from 'react-hook-form';
+import { Link } from 'react-router-dom';
 import { download, get, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { date, money } from '../lib/format';
@@ -268,6 +269,7 @@ export function FeesPage() {
                     <th className="text-right">Billed</th>
                     <th className="text-right">Paid</th>
                     <th className="text-right">Balance</th>
+                    {can('payments:create') && <th />}
                   </tr>
                 </thead>
                 <tbody>
@@ -289,6 +291,22 @@ export function FeesPage() {
                         <td className="text-right">{money(row.total, currency)}</td>
                         <td className="text-right">{money(row.amountPaid, currency)}</td>
                         <td className="text-right font-semibold">{money(row.balance, currency)}</td>
+                        {can('payments:create') && (
+                          <td className="text-right">
+                            {/* Whoever is reading this list is looking at who owes
+                                money, so let them take it here rather than making
+                                them carry a name across to the payments page. */}
+                            <Link
+                              className="link whitespace-nowrap"
+                              to={`/payments${qs({
+                                studentId: row.student.id,
+                                admissionNumber: row.student.admissionNumber,
+                              })}`}
+                            >
+                              Record payment
+                            </Link>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
