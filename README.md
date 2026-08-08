@@ -73,6 +73,28 @@ The API is not published to the host — only nginx is, on 8080, and it proxies
 `/api` through. To call the API directly, add `ports: ['4000:4000']` to the
 `api` service.
 
+#### If the API cannot reach the database
+
+```
+FATAL: password authentication failed for user "sms"
+Error: P1000: Authentication failed against database server at `db`
+```
+
+`POSTGRES_PASSWORD` is read **only when the database volume is first created**.
+If a volume already exists from an earlier run, Postgres keeps whatever
+password it was built with and ignores the new one, so the API's URL no longer
+matches. Delete the volume and start again:
+
+```bash
+docker compose down -v      # -v deletes the database as well
+docker compose up --build
+```
+
+If it persists, check the password itself. It is interpolated straight into a
+connection URL, so a `/` makes that URL invalid, and `@` or `#` will be read as
+the start of the host or a comment. Letters, digits, hyphens and underscores
+are always safe — `openssl rand -hex 32` produces one.
+
 ### Local development
 
 Requires Node.js 20+ and a PostgreSQL 14+ server.
