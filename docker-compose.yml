@@ -69,6 +69,32 @@ services:
     expose:
       - '4000'
 
+  # One-shot, for evaluating the system rather than running it. Loads the
+  # demonstration school — 144 students, staff, fees, results and a timetable —
+  # so there is something to look at and someone to sign in as.
+  #
+  #   docker compose --profile demo run --rm seed
+  #
+  # It builds from the Dockerfile's build stage because the seed is written in
+  # TypeScript and the production image drops the tooling that runs it.
+  # Re-running resets the demo school and leaves any other school alone.
+  seed:
+    profiles: ['demo']
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      target: build
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sms}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sms}?schema=public
+      DIRECT_URL: postgresql://${POSTGRES_USER:-sms}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sms}?schema=public
+    # Applies migrations first, so this works whether or not the API has
+    # started yet.
+    command: sh -c "npm run db:deploy --workspace=server && npm run db:seed --workspace=server"
+    restart: 'no'
+
   web:
     build:
       context: .

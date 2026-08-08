@@ -27,6 +27,9 @@ parent communication — with role-scoped portals for staff, parents and student
 
 ### With Docker (recommended)
 
+Docker Desktop, or Docker Engine with the Compose plugin, is all you need —
+no Node.js and no PostgreSQL on the host.
+
 ```bash
 cp .env.example .env
 # Fill in POSTGRES_PASSWORD, JWT_ACCESS_SECRET and JWT_REFRESH_SECRET.
@@ -35,12 +38,40 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The app is served at <http://localhost:8080>. Migrations run automatically on
-API start-up. To load the demo school:
+That starts PostgreSQL, Redis, the API and nginx, and applies migrations on
+API start-up. The app is served at <http://localhost:8080>.
+
+**The database starts empty, so nothing can sign in yet.** Choose one:
 
 ```bash
-docker compose exec api npx tsx prisma/seed.ts
+# A. The demonstration school — 144 students, staff, fees, results, timetable.
+#    Best for evaluating the system. Prints the sign-in details when it finishes.
+docker compose --profile demo run --rm seed
+
+# B. An empty school with one administrator, for a real installation.
+docker compose exec api node dist/scripts/bootstrap.js
 ```
+
+Option A runs from the image's build stage, because the seed is TypeScript and
+the production image deliberately drops the tooling that runs it. Re-running it
+resets the demo school and leaves any other school alone.
+
+Option B prompts for the school name, code and administrator, or takes them as
+`SCHOOL_NAME`, `SCHOOL_CODE`, `ADMIN_EMAIL` and the rest for an unattended
+install. It generates a password if you do not supply one.
+
+Useful while testing:
+
+```bash
+docker compose logs -f api        # follow the API log
+docker compose ps                 # what is running, and whether it is healthy
+docker compose down               # stop, keeping the database
+docker compose down -v            # stop and delete the database as well
+```
+
+The API is not published to the host — only nginx is, on 8080, and it proxies
+`/api` through. To call the API directly, add `ports: ['4000:4000']` to the
+`api` service.
 
 ### Local development
 
