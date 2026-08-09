@@ -63,6 +63,7 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
     section: 'Administration',
     items: [
       { label: 'Reports', to: '/reports', icon: '📈', permissions: ['reports:read'] },
+      { label: 'Users', to: '/users', icon: '🔑', permissions: ['users:read'] },
       { label: 'Settings', to: '/settings', icon: '⚙', permissions: ['school:read'] },
       { label: 'Schools (SaaS)', to: '/platform', icon: '🏫', roles: ['SUPER_ADMIN'] },
     ],

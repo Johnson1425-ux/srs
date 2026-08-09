@@ -26,6 +26,7 @@ import { TransportPage } from './pages/TransportPage';
 import { CommunicationPage } from './pages/CommunicationPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { UsersPage } from './pages/UsersPage';
 import { PlatformPage } from './pages/PlatformPage';
 import { PortalPage } from './pages/PortalPage';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -232,6 +233,14 @@ export function App() {
           element={
             <RequirePermission permissions={['reports:read']}>
               <ReportsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="users"
+          element={
+            <RequirePermission permissions={['users:read']}>
+              <UsersPage />
             </RequirePermission>
           }
         />
