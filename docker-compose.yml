@@ -11,10 +11,20 @@ services:
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-sms} -d ${POSTGRES_DB:-sms}']
+      # -h forces a TCP check. The default Unix socket answers during the
+      # init phase, while the server is still only listening locally, which
+      # would report healthy before the API could actually connect.
+      test:
+        ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-sms} -d ${POSTGRES_DB:-sms}']
       interval: 10s
       timeout: 5s
       retries: 5
+      # The very first start creates the cluster, which on a slow disk takes
+      # longer than retries × interval — a checkpoint sync alone can run for
+      # fifteen seconds. Failures inside this window do not count against the
+      # retries, so a slow laptop no longer reports the database as unhealthy
+      # while it is still initialising.
+      start_period: 120s
     # Not published to the host: only the API reaches the database.
     expose:
       - '5432'

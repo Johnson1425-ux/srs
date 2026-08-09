@@ -73,6 +73,28 @@ The API is not published to the host — only nginx is, on 8080, and it proxies
 `/api` through. To call the API directly, add `ports: ['4000:4000']` to the
 `api` service.
 
+#### If the first start says the database is unhealthy
+
+```
+dependency failed to start: container sms-db-1 is unhealthy
+```
+
+Check the `db` logs. If they end with `database system is ready to accept
+connections`, Postgres is fine — the health check simply ran out of retries
+while the cluster was still being created, which on a slow disk takes longer
+than it looks (a single checkpoint sync can run for fifteen seconds).
+
+Just start it again:
+
+```bash
+docker compose up
+```
+
+The volume now exists, so this start skips initialisation and comes up in
+seconds. Do **not** use `down -v` here — that deletes the cluster and puts you
+back on the slow path. The health check allows a two-minute start-up window,
+so this should not recur.
+
 #### If the API cannot reach the database
 
 ```
