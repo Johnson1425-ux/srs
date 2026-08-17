@@ -467,30 +467,35 @@ frontend reports a network failure and the logs never print
 #### Creating the first account
 
 Migrations leave an empty database, and nobody can sign in to a deployment with
-no users. `npm run bootstrap` creates the first school and its administrator,
-but Render's Shell is a paid feature — on a free instance there is no terminal
-to run it in. Use the build command for the one-off instead.
+no users. `npm run bootstrap` creates the first school and its administrator.
 
-Set these on the service, temporarily:
+Render's Shell is a paid feature, so on a free instance there is no terminal on
+the server to run it in — but there does not need to be. A hosted database
+(Neon, Supabase) is reachable from anywhere, so run the script from your own
+machine, pointed at production:
 
-```
-SCHOOL_NAME=Mlimani Secondary
-SCHOOL_CODE=MLM
-ADMIN_FIRST_NAME=Ada
-ADMIN_LAST_NAME=Mushi
-ADMIN_EMAIL=admin@your-school.ac.tz
-```
+```bash
+npm ci --workspace=server --include-workspace-root
+npm run db:generate --workspace=server        # bootstrap needs the Prisma client
 
-Append the script to the Build Command, deploy once, then **remove it again**:
-
-```
-... && npm run bootstrap --workspace=server
+export DATABASE_URL="postgresql://…-pooler…/sms?sslmode=require&pgbouncer=true"
+export DIRECT_URL="postgresql://…/sms?sslmode=require"
+npm run bootstrap --workspace=server
 ```
 
-The script reads those variables instead of prompting when no terminal is
-attached, and prints the generated password in the build log. Sign in with it
-once — the account is flagged `mustChangePassword`, so the first sign-in forces
-a new one — then delete the five variables and the appended command.
+It prompts for the school name, a short code, and the administrator's name and
+email, then prints the generated password. The account is flagged
+`mustChangePassword`, so the first sign-in forces a new one. Nothing about the
+Render service changes, and the script is not part of any deploy.
+
+Only reach for the build command if the database is *not* reachable from your
+machine — Render Postgres over its Internal URL, or a private network. In that
+case set `SCHOOL_NAME`, `SCHOOL_CODE`, `ADMIN_FIRST_NAME`, `ADMIN_LAST_NAME` and
+`ADMIN_EMAIL` on the service, append `&& npm run bootstrap --workspace=server`
+to the Build Command, deploy once, and read the password from the build log.
+The script takes those variables instead of prompting when no terminal is
+attached. **Then remove the appended command**, or the next deploy fails with
+`School code … is already in use`.
 
 Do **not** use `npm run db:seed` for this. It builds the demo school with
 hundreds of fictional students and well-known passwords (`Passw0rd!`), which is
