@@ -12,7 +12,9 @@
     "build": "npm run build --workspace=server && npm run build --workspace=web",
     "test": "npm run test --workspace=server",
     "db:migrate": "npm run db:migrate --workspace=server",
-    "db:seed": "npm run db:seed --workspace=server"
+    "db:seed": "npm run db:seed --workspace=server",
+    "bootstrap": "npm run bootstrap --workspace=server",
+    "bootstrap:super-admin": "npm run bootstrap:super-admin --workspace=server"
   },
   "engines": {
     "node": ">=20"

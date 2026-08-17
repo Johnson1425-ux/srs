@@ -342,7 +342,7 @@ DEPLOYMENT_MODE=standalone
 | Platform administration (`/platform`) | mounted | **not mounted** — the routes do not exist |
 | Subscription plans and student caps | enforced | not applied |
 | Subscription card in Settings | shown | hidden |
-| First account created by | `npm run bootstrap -- --super-admin` | `npm run bootstrap` |
+| First account created by | `npm run bootstrap:super-admin` | `npm run bootstrap` |
 | Schools thereafter created by | `POST /platform/schools` | — there is only the one |
 
 The data model is identical either way — a standalone install is simply a
@@ -485,7 +485,7 @@ no users. `npm run bootstrap` creates the first account, in one of two shapes:
 
 | You intend to | Run | You get |
 | --- | --- | --- |
-| Add schools yourself, through the platform screens | `npm run bootstrap -- --super-admin` | A `SUPER_ADMIN` belonging to no school |
+| Add schools yourself, through the platform screens | `npm run bootstrap:super-admin` | A `SUPER_ADMIN` belonging to no school |
 | Run a single school | `npm run bootstrap` | One school, with its own `ADMIN` |
 
 `saas` mode wants the first: onboarding a tenant is `POST /platform/schools`,
@@ -508,11 +508,16 @@ npm run db:generate --workspace=server        # bootstrap needs the Prisma clien
 
 export DATABASE_URL="postgresql://…-pooler…/sms?sslmode=require&pgbouncer=true"
 export DIRECT_URL="postgresql://…/sms?sslmode=require"
-npm run bootstrap --workspace=server -- --super-admin
+npm run bootstrap:super-admin
 ```
 
+Both scripts are run from the repository root, and neither takes arguments —
+`bootstrap:super-admin` exists as its own entry precisely so nothing depends on
+npm forwarding a flag, which it declines to do on some versions and platforms
+(`Unknown cli config "--super-admin"`, and the school form runs instead).
+
 It prompts for the administrator's name and email — plus the school name and
-code, in the form without `--super-admin` — then prints the generated password:
+code, in the plain `bootstrap` form — then prints the generated password:
 
 ```
   Platform administrator created
@@ -530,7 +535,7 @@ Only reach for the build command if the database is *not* reachable from your
 machine — Render Postgres over its Internal URL, or a private network. In that
 case set `ADMIN_FIRST_NAME`, `ADMIN_LAST_NAME` and `ADMIN_EMAIL` on the service
 (plus `SCHOOL_NAME` and `SCHOOL_CODE` for the school form), append
-`&& npm run bootstrap --workspace=server -- --super-admin` to the Build Command,
+`&& npm run bootstrap:super-admin` to the Build Command,
 deploy once, and read the password from the build log. The script takes those
 variables instead of prompting when no terminal is attached. **Then remove the
 appended command**, or the next deploy fails — on the existing platform
