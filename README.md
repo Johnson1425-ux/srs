@@ -379,40 +379,54 @@ asset caching — the jobs nginx does in the self-hosted setup.
 **Vercel** — Root Directory `web`, environment variable
 `VITE_API_URL=https://your-api.onrender.com`.
 
-**Render** — `render.yaml` at the repository root describes the API service, so
-the quickest route is **New → Blueprint** and pick this repository. Render reads
-the build, start and health-check settings from the file, generates both `JWT_*`
-secrets for you, and prompts for the three values it cannot know:
-`DATABASE_URL`, `DIRECT_URL` and `CORS_ORIGIN`.
+**Render** — create the service by hand: **New → Web Service**, connect this
+repository, and choose the **Node** runtime. Prefer it over the Dockerfile; both
+work, but the native runtime needs no container build.
 
-To set the service up by hand instead, leave Root Directory **blank**. Render
-`cd`s into it and runs npm there, and `npm ci` fails inside `server/` because npm
-workspaces keep a single lockfile at the repository root. Address the workspace
-by flag instead:
+Leave **Root Directory blank**. Render `cd`s into it and runs npm there, and
+`npm ci` fails inside `server/` because npm workspaces keep a single lockfile at
+the repository root. Address the workspace by flag instead:
 
 | Field | Value |
 | --- | --- |
+| Root Directory | *(blank)* |
+| Runtime | `Node` |
 | Build Command | `npm ci --workspace=server --include-workspace-root && npm run build --workspace=server && npm run db:deploy --workspace=server` |
 | Start Command | `node server/dist/index.js` |
 | Health Check Path | `/health` |
 
-Set `DATABASE_URL`, `DIRECT_URL`, both `JWT_*` secrets and
-`CORS_ORIGIN=https://your-app.vercel.app`. Leave `PORT` alone — Render injects
-it. Prefer Render's native Node runtime over the Dockerfile; both work, but the
-native runtime needs no container build.
+Then add the environment variables:
+
+| Variable | Value |
+| --- | --- |
+| `NODE_VERSION` | `22` |
+| `NODE_ENV` | `production` |
+| `DATABASE_URL` | pooled connection — see below |
+| `DIRECT_URL` | direct connection — see below |
+| `CORS_ORIGIN` | `https://your-app.vercel.app`, comma-separated for more than one |
+| `JWT_ACCESS_SECRET` | `openssl rand -base64 48` |
+| `JWT_REFRESH_SECRET` | a *different* `openssl rand -base64 48` |
+| `DEPLOYMENT_MODE` | `saas` or `standalone` |
+
+Leave `PORT` alone — Render injects it and the app reads it. Everything else has
+a working default: SMS and email stay in the outbox until configured, so the
+list above is the whole of what a first deploy needs.
 
 **Where migrations run.** `prisma migrate deploy` is the last step of the build
-command above rather than a Pre-Deploy Command, because Pre-Deploy is a paid
-feature and the build environment already has the database variables. Migrations
-therefore apply once per *build*. On a paid plan — and certainly before running
-more than one instance — move that step to the Pre-Deploy Command, where it runs
-once per deploy with no chance of two builds racing:
+command rather than a Pre-Deploy Command, because Pre-Deploy is a paid feature —
+on a free instance the field is not there to fill in, and the API would boot
+against an unmigrated database. The build environment already has the database
+variables, so it works there. Migrations therefore apply once per *build*. On a
+paid plan — and certainly before running more than one instance — move that last
+step into the Pre-Deploy Command, where it runs once per deploy with no chance
+of two builds racing:
 
 ```
 npm run db:deploy --workspace=server
 ```
 
-`render.yaml` carries the same step commented out, ready to uncomment.
+Putting it last means a compile error stops the deploy before it touches the
+database.
 
 **Free instances sleep.** A free web service spins down after 15 minutes idle and
 takes a few seconds to answer the request that wakes it; a free Neon database
