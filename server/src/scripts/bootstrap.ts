@@ -1,17 +1,24 @@
 /**
- * Creates the first school and its administrator.
+ * Creates the first account a fresh deployment can sign in with.
+ *
+ *   npm run bootstrap                    a school and its administrator
+ *   npm run bootstrap -- --super-admin   the platform administrator, no school
  *
  * A SaaS deployment onboards tenants through `POST /platform/schools`, which
- * requires a super admin. A standalone installation has neither — so without
- * this script a school that owns its own copy has no way to create itself.
+ * requires a super admin — and a super admin can only be created here, since
+ * onboarding is the thing it exists to do. Use `--super-admin` when you intend
+ * to add schools through the platform screens yourself.
  *
- *   npm run bootstrap
+ * A standalone installation has no platform administration at all, so it wants
+ * the default form: one school, with its own ADMIN as the highest role.
  *
  * Values may be supplied as environment variables for unattended installs, and
  * anything missing is prompted for when a terminal is attached:
  *
  *   SCHOOL_NAME, SCHOOL_CODE, ADMIN_FIRST_NAME, ADMIN_LAST_NAME,
  *   ADMIN_EMAIL, ADMIN_PASSWORD (generated when omitted)
+ *
+ * `--super-admin` reads the same ADMIN_* variables and ignores the SCHOOL_ ones.
  */
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
@@ -23,6 +30,7 @@ const prisma = new PrismaClient();
 
 const mode = process.env.DEPLOYMENT_MODE === 'standalone' ? 'standalone' : 'saas';
 const force = process.argv.includes('--force');
+const superAdminOnly = process.argv.includes('--super-admin');
 
 function generatePassword(): string {
   // Satisfies the password policy: upper, lower and a digit.
@@ -52,22 +60,94 @@ async function ask(
   throw new Error(`${label} is required`);
 }
 
-async function main(): Promise<void> {
-  const existing = await prisma.school.count();
-
-  if (existing > 0 && mode === 'standalone' && !force) {
+/**
+ * Creates the platform administrator and nothing else.
+ *
+ * It belongs to no school — that is what `schoolId: null` means on User, and
+ * why the uniqueness of its email has to be checked by hand: the
+ * `@@unique([schoolId, email])` index does not constrain rows where schoolId
+ * is null, because Postgres treats each null as distinct.
+ */
+async function createSuperAdmin(rl: ReturnType<typeof createInterface> | null): Promise<void> {
+  if (mode === 'standalone' && !force) {
     console.error(
-      `\nThis installation already has ${existing} school(s).\n` +
-        'A standalone installation is meant to hold exactly one.\n' +
-        'Re-run with --force if you genuinely intend to add another.\n',
+      '\nA standalone installation has no platform administration to run.\n' +
+        "The school's own ADMIN is the highest role, and /platform is not\n" +
+        'mounted at all. Run without --super-admin to create the school, or\n' +
+        'pass --force if you are converting this installation to saas.\n',
     );
     process.exit(1);
   }
 
+  const existing = await prisma.user.count({ where: { role: Role.SUPER_ADMIN, schoolId: null } });
+
+  if (existing > 0 && !force) {
+    console.error(
+      `\nThis deployment already has ${existing} platform administrator(s).\n` +
+        'Create any further ones from the platform screens, where the action\n' +
+        'is audited. Re-run with --force to add one here anyway.\n',
+    );
+    process.exit(1);
+  }
+
+  console.log('\nCreating the platform administrator\n');
+
+  const firstName = await ask(rl, 'First name', process.env.ADMIN_FIRST_NAME);
+  const lastName = await ask(rl, 'Last name', process.env.ADMIN_LAST_NAME);
+  const email = (await ask(rl, 'Email', process.env.ADMIN_EMAIL)).toLowerCase();
+
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('Email is not valid');
+
+  const clash = await prisma.user.findFirst({ where: { email, schoolId: null } });
+  if (clash) throw new Error(`${email} is already a platform account`);
+
+  const suppliedPassword = process.env.ADMIN_PASSWORD?.trim();
+  const password = suppliedPassword || generatePassword();
+
+  await prisma.user.create({
+    data: {
+      email,
+      firstName,
+      lastName,
+      role: Role.SUPER_ADMIN,
+      passwordHash: await argon2.hash(password, { type: argon2.argon2id }),
+      // Only force a change when we generated the password ourselves.
+      mustChangePassword: !suppliedPassword,
+    },
+  });
+
+  console.log('\n  Platform administrator created\n');
+  console.log('  Sign in with:');
+  console.log(`    ${email}`);
+  console.log(`    ${password}`);
+  if (!suppliedPassword) {
+    console.log('\n  This password must be changed at first sign-in.');
+  }
+  console.log('\n  Next: add each school under Platform. Every one gets its own');
+  console.log('  administrator, who sets up its academic year from there.\n');
+}
+
+async function main(): Promise<void> {
   const interactive = Boolean(stdin.isTTY);
   const rl = interactive ? createInterface({ input: stdin, output: stdout }) : null;
 
   try {
+    if (superAdminOnly) {
+      await createSuperAdmin(rl);
+      return;
+    }
+
+    const existing = await prisma.school.count();
+
+    if (existing > 0 && mode === 'standalone' && !force) {
+      console.error(
+        `\nThis installation already has ${existing} school(s).\n` +
+          'A standalone installation is meant to hold exactly one.\n' +
+          'Re-run with --force if you genuinely intend to add another.\n',
+      );
+      process.exit(1);
+    }
+
     console.log(`\nSetting up a new school (${mode} mode)\n`);
 
     const name = await ask(rl, 'School name', process.env.SCHOOL_NAME);

@@ -342,7 +342,8 @@ DEPLOYMENT_MODE=standalone
 | Platform administration (`/platform`) | mounted | **not mounted** — the routes do not exist |
 | Subscription plans and student caps | enforced | not applied |
 | Subscription card in Settings | shown | hidden |
-| First school created by | `POST /platform/schools` | `npm run bootstrap` |
+| First account created by | `npm run bootstrap -- --super-admin` | `npm run bootstrap` |
+| Schools thereafter created by | `POST /platform/schools` | — there is only the one |
 
 The data model is identical either way — a standalone install is simply a
 tenant of one, so a school can be migrated between the two without a schema
@@ -364,7 +365,8 @@ twice unless passed `--force`, since a standalone install should hold exactly
 one school.
 
 Standalone deployments should not have a `SUPER_ADMIN` account at all — the
-school's own administrator is the highest role.
+school's own administrator is the highest role, and `--super-admin` refuses to
+run in this mode for that reason.
 
 ## Deployment
 
@@ -479,7 +481,21 @@ frontend reports a network failure and the logs never print
 #### Creating the first account
 
 Migrations leave an empty database, and nobody can sign in to a deployment with
-no users. `npm run bootstrap` creates the first school and its administrator.
+no users. `npm run bootstrap` creates the first account, in one of two shapes:
+
+| You intend to | Run | You get |
+| --- | --- | --- |
+| Add schools yourself, through the platform screens | `npm run bootstrap -- --super-admin` | A `SUPER_ADMIN` belonging to no school |
+| Run a single school | `npm run bootstrap` | One school, with its own `ADMIN` |
+
+`saas` mode wants the first: onboarding a tenant is `POST /platform/schools`,
+which only a `SUPER_ADMIN` may call, and each school gets its administrator as
+part of being created. `standalone` mode wants the second, and refuses
+`--super-admin` outright — platform administration is not mounted there, so the
+account would have nothing to administer.
+
+The script declines to create a second platform administrator; add those from
+the platform screens, where the action is audited. `--force` overrides it.
 
 Render's Shell is a paid feature, so on a free instance there is no terminal on
 the server to run it in — but there does not need to be. A hosted database
@@ -492,22 +508,33 @@ npm run db:generate --workspace=server        # bootstrap needs the Prisma clien
 
 export DATABASE_URL="postgresql://…-pooler…/sms?sslmode=require&pgbouncer=true"
 export DIRECT_URL="postgresql://…/sms?sslmode=require"
-npm run bootstrap --workspace=server
+npm run bootstrap --workspace=server -- --super-admin
 ```
 
-It prompts for the school name, a short code, and the administrator's name and
-email, then prints the generated password. The account is flagged
-`mustChangePassword`, so the first sign-in forces a new one. Nothing about the
-Render service changes, and the script is not part of any deploy.
+It prompts for the administrator's name and email — plus the school name and
+code, in the form without `--super-admin` — then prints the generated password:
+
+```
+  Platform administrator created
+
+  Sign in with:
+    admin@srs.co.tz
+    Sms-b21cf90b9f27A1
+```
+
+The account is flagged `mustChangePassword`, so the first sign-in forces a new
+one. Nothing about the Render service changes, and the script is not part of any
+deploy.
 
 Only reach for the build command if the database is *not* reachable from your
 machine — Render Postgres over its Internal URL, or a private network. In that
-case set `SCHOOL_NAME`, `SCHOOL_CODE`, `ADMIN_FIRST_NAME`, `ADMIN_LAST_NAME` and
-`ADMIN_EMAIL` on the service, append `&& npm run bootstrap --workspace=server`
-to the Build Command, deploy once, and read the password from the build log.
-The script takes those variables instead of prompting when no terminal is
-attached. **Then remove the appended command**, or the next deploy fails with
-`School code … is already in use`.
+case set `ADMIN_FIRST_NAME`, `ADMIN_LAST_NAME` and `ADMIN_EMAIL` on the service
+(plus `SCHOOL_NAME` and `SCHOOL_CODE` for the school form), append
+`&& npm run bootstrap --workspace=server -- --super-admin` to the Build Command,
+deploy once, and read the password from the build log. The script takes those
+variables instead of prompting when no terminal is attached. **Then remove the
+appended command**, or the next deploy fails — on the existing platform
+administrator, or on a duplicate school code.
 
 Do **not** use `npm run db:seed` for this. It builds the demo school with
 hundreds of fictional students and well-known passwords (`Passw0rd!`), which is
