@@ -40,6 +40,26 @@ interface SchoolRow {
   _count: { users: number; students: number; staff: number };
 }
 
+interface PlatformUser {
+  id: string;
+  email: string;
+  phone: string | null;
+  firstName: string;
+  lastName: string;
+  status: string;
+  lastLoginAt: string | null;
+  lockedUntil: string | null;
+  mustChangePassword: boolean;
+  _count?: { sessions: number };
+}
+
+interface AdminForm {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+}
+
 interface Usage {
   schools: number;
   byStatus: Record<string, number>;
@@ -74,18 +94,31 @@ const PLAN_LIMITS: Record<string, { maxStudents: number; storageQuotaMb: number 
 
 /** Module 22 — multi-school SaaS administration, super admin only. */
 export function PlatformPage() {
-  const { hasRole, setActiveSchool } = useAuth();
+  const { hasRole, setActiveSchool, user: me } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
-  const [created, setCreated] = useState<{ email: string; password: string; school: string } | null>(
-    null,
-  );
+  const [created, setCreated] = useState<{
+    email: string;
+    password: string;
+    /** What the credentials belong to — a school, or platform administration. */
+    subject: string;
+    kind: 'school' | 'administrator';
+  } | null>(null);
   const [editing, setEditing] = useState<SchoolRow | null>(null);
   const [deleting, setDeleting] = useState<SchoolRow | null>(null);
   const [confirmCode, setConfirmCode] = useState('');
 
   const subscriptionForm = useForm<SubscriptionForm>();
+  const [tab, setTab] = useState<'schools' | 'admins'>('schools');
+  const [showAdminForm, setShowAdminForm] = useState(false);
+  const adminForm = useForm<AdminForm>();
+
+  const admins = useQuery({
+    queryKey: ['platform', 'users'],
+    queryFn: () => get<{ data: PlatformUser[] }>('/platform/users'),
+    enabled: hasRole('SUPER_ADMIN') && tab === 'admins',
+  });
 
   const schools = useQuery({
     queryKey: ['platform', 'schools'],
@@ -125,7 +158,8 @@ export function PlatformPage() {
       setShowForm(false);
       form.reset({ plan: 'TRIAL' });
       setCreated({
-        school: result.school.name,
+        kind: 'school',
+        subject: result.school.name,
         email: result.administrator.email,
         password: result.administrator.temporaryPassword,
       });
@@ -160,6 +194,54 @@ export function PlatformPage() {
       setDeleting(null);
       setConfirmCode('');
     },
+  });
+
+  const addAdmin = useMutation({
+    mutationFn: (values: AdminForm) =>
+      post<PlatformUser & { temporaryPassword?: string }>('/platform/users', {
+        firstName: values.firstName,
+        lastName: values.lastName,
+        email: values.email,
+        phone: values.phone || undefined,
+      }),
+    onSuccess: (user) => {
+      void queryClient.invalidateQueries({ queryKey: ['platform', 'users'] });
+      setShowAdminForm(false);
+      adminForm.reset();
+      if (user.temporaryPassword) {
+        setCreated({
+          kind: 'administrator',
+          subject: `${user.firstName} ${user.lastName}`,
+          email: user.email,
+          password: user.temporaryPassword,
+        });
+      }
+    },
+  });
+
+  const setAdminStatus = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      patch(`/platform/users/${id}`, { status }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['platform', 'users'] }),
+  });
+
+  const resetAdminPassword = useMutation({
+    mutationFn: (u: PlatformUser) =>
+      post<{ temporaryPassword: string }>(`/platform/users/${u.id}/reset-password`),
+    onSuccess: (result, u) => {
+      void queryClient.invalidateQueries({ queryKey: ['platform', 'users'] });
+      setCreated({
+        kind: 'administrator',
+        subject: `${u.firstName} ${u.lastName}`,
+        email: u.email,
+        password: result.temporaryPassword,
+      });
+    },
+  });
+
+  const removeAdmin = useMutation({
+    mutationFn: (u: PlatformUser) => del(`/platform/users/${u.id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['platform', 'users'] }),
   });
 
   const openSubscription = (school: SchoolRow) => {
@@ -224,6 +306,131 @@ export function PlatformPage() {
         </div>
       )}
 
+      <div className="mb-4 flex gap-1 border-b border-slate-200">
+        {(['schools', 'admins'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={`border-b-2 px-4 py-2 text-sm font-medium ${
+              tab === t
+                ? 'border-blue-600 text-blue-700'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            {t === 'schools' ? 'Schools' : 'Administrators'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'admins' && (
+        <Card padded={false}>
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+            <div>
+              <p className="text-sm font-medium text-slate-800">Platform administrators</p>
+              <p className="mt-1 text-xs text-slate-500">
+                These accounts belong to no school and can reach every tenant. Keep the list short.
+              </p>
+            </div>
+            <button type="button" className="btn-primary" onClick={() => setShowAdminForm(true)}>
+              Add administrator
+            </button>
+          </div>
+
+          {removeAdmin.error != null && (
+            <div className="p-5">
+              <ErrorNote error={removeAdmin.error} />
+            </div>
+          )}
+          {setAdminStatus.error != null && (
+            <div className="p-5">
+              <ErrorNote error={setAdminStatus.error} />
+            </div>
+          )}
+
+          {admins.isLoading ? (
+            <Spinner />
+          ) : admins.error ? (
+            <div className="p-5">
+              <ErrorNote error={admins.error} />
+            </div>
+          ) : (
+            <TableWrap>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Status</th>
+                    <th>Last sign-in</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {admins.data?.data.map((u) => {
+                    const isMe = u.id === me?.id;
+                    return (
+                      <tr key={u.id}>
+                        <td className="font-medium text-slate-900">
+                          {u.firstName} {u.lastName}
+                          {isMe && <span className="ml-2 text-xs text-slate-400">(you)</span>}
+                        </td>
+                        <td className="text-sm">{u.email}</td>
+                        <td>
+                          <Badge status={u.status} />
+                          {u.mustChangePassword && (
+                            <span className="block pt-1 text-xs text-slate-400">
+                              Must change password
+                            </span>
+                          )}
+                        </td>
+                        <td className="text-sm">
+                          {u.lastLoginAt ? (
+                            date(u.lastLoginAt)
+                          ) : (
+                            <span className="text-slate-400">Never</span>
+                          )}
+                        </td>
+                        <td className="text-right">
+                          <ActionMenu
+                            items={[
+                              {
+                                label: 'Reset password',
+                                onClick: () => resetAdminPassword.mutate(u),
+                              },
+                              u.status === 'ACTIVE'
+                                ? {
+                                    label: 'Disable',
+                                    onClick: () =>
+                                      setAdminStatus.mutate({ id: u.id, status: 'DISABLED' }),
+                                    danger: true,
+                                    disabled: isMe,
+                                  }
+                                : {
+                                    label: 'Activate',
+                                    onClick: () =>
+                                      setAdminStatus.mutate({ id: u.id, status: 'ACTIVE' }),
+                                  },
+                              {
+                                label: 'Delete',
+                                onClick: () => removeAdmin.mutate(u),
+                                danger: true,
+                                disabled: isMe,
+                              },
+                            ]}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </TableWrap>
+          )}
+        </Card>
+      )}
+
+      {tab === 'schools' && (
       <Card padded={false}>
         {schools.isLoading ? (
           <Spinner />
@@ -305,6 +512,53 @@ export function PlatformPage() {
           </TableWrap>
         )}
       </Card>
+      )}
+
+      {showAdminForm && (
+        <Modal title="Add a platform administrator" onClose={() => setShowAdminForm(false)}>
+          <form
+            onSubmit={adminForm.handleSubmit((v) => addAdmin.mutate(v))}
+            className="space-y-4"
+            noValidate
+          >
+            {addAdmin.error != null && <ErrorNote error={addAdmin.error} />}
+
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              A platform administrator can reach every school's records, change any subscription
+              and delete a school. Only add someone who needs all of that.
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="First name" required>
+                <input className="input" {...adminForm.register('firstName', { required: true })} />
+              </Field>
+              <Field label="Last name" required>
+                <input className="input" {...adminForm.register('lastName', { required: true })} />
+              </Field>
+            </div>
+            <Field label="Email" required hint="This is what they sign in with.">
+              <input
+                className="input"
+                type="email"
+                {...adminForm.register('email', { required: true })}
+              />
+            </Field>
+            <Field label="Phone">
+              <input className="input" {...adminForm.register('phone')} />
+            </Field>
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button type="button" className="btn-secondary" onClick={() => setShowAdminForm(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn-primary" disabled={addAdmin.isPending}>
+                {addAdmin.isPending ? 'Creating…' : 'Create administrator'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
 
       {showForm && (
         <Modal title="Onboard a new school" onClose={() => setShowForm(false)} wide>
@@ -514,10 +768,22 @@ export function PlatformPage() {
       )}
 
       {created && (
-        <Modal title="School created" onClose={() => setCreated(null)}>
+        <Modal
+          title={created.kind === 'school' ? 'School created' : 'Hand this password over'}
+          onClose={() => setCreated(null)}
+        >
           <p className="mb-4 text-sm text-slate-600">
-            <strong>{created.school}</strong> is ready. Send the administrator these credentials
-            securely.
+            {created.kind === 'school' ? (
+              <>
+                <strong>{created.subject}</strong> is ready. Send the administrator these
+                credentials securely.
+              </>
+            ) : (
+              <>
+                A one-time password for <strong>{created.subject}</strong>. It is shown once and
+                cannot be retrieved, and they must change it at first sign-in.
+              </>
+            )}
           </p>
           <div className="rounded-lg border border-slate-200 p-4 font-mono text-sm">
             <p>{created.email}</p>

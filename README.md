@@ -50,6 +50,9 @@ docker compose --profile demo run --rm seed
 
 # B. An empty school with one administrator, for a real installation.
 docker compose exec api node dist/scripts/bootstrap.js
+
+# C. SaaS only — the first platform administrator, who onboards the schools.
+docker compose exec api node dist/scripts/bootstrap-platform.js
 ```
 
 Option A runs from the image's build stage, because the seed is TypeScript and
@@ -59,6 +62,14 @@ resets the demo school and leaves any other school alone.
 Option B prompts for the school name, code and administrator, or takes them as
 `SCHOOL_NAME`, `SCHOOL_CODE`, `ADMIN_EMAIL` and the rest for an unattended
 install. It generates a password if you do not supply one.
+
+Option C is for a SaaS deployment and is needed **once**. A platform
+administrator belongs to no school, so nothing inside a school can create one
+and platform administration is itself closed to anyone who is not already a
+super admin — which would leave a new installation with no way in. Afterwards,
+further administrators are added under Schools → Administrators, where the
+action is recorded against whoever took it. The script refuses to run a second
+time for that reason.
 
 Useful while testing:
 

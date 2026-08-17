@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { Role, SchoolStatus, SubscriptionPlan, StudentStatus } from '@prisma/client';
+import { Role, SchoolStatus, SubscriptionPlan, StudentStatus, UserStatus } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../db/prisma.js';
 import { asyncHandler, paginate, paginationSchema, skipTake, validate } from '../../lib/http.js';
@@ -266,6 +266,214 @@ platformRouter.delete(
       },
     });
 
+    res.status(204).send();
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * Platform administrators.
+ *
+ * These accounts belong to no school, so the school-scoped user routes cannot
+ * reach them — they filter by tenant and refuse the super admin role outright.
+ * Without this section a provider could never add a second administrator, reset
+ * a colleague's password, or close the account of someone who has left.
+ * ------------------------------------------------------------------------- */
+
+const platformUserSelect = {
+  id: true,
+  email: true,
+  phone: true,
+  firstName: true,
+  lastName: true,
+  status: true,
+  lastLoginAt: true,
+  createdAt: true,
+  lockedUntil: true,
+  mustChangePassword: true,
+  _count: { select: { sessions: { where: { revokedAt: null } } } },
+} as const;
+
+/** How many platform administrators could still sign in besides this one. */
+async function otherActiveAdmins(excludingId: string): Promise<number> {
+  return prisma.user.count({
+    where: {
+      role: Role.SUPER_ADMIN,
+      status: UserStatus.ACTIVE,
+      id: { not: excludingId },
+    },
+  });
+}
+
+platformRouter.get(
+  '/users',
+  asyncHandler(async (_req, res) => {
+    const data = await prisma.user.findMany({
+      where: { role: Role.SUPER_ADMIN },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+      select: platformUserSelect,
+    });
+    res.json({ data });
+  }),
+);
+
+platformRouter.post(
+  '/users',
+  validate(
+    z.object({
+      firstName: z.string().min(1),
+      lastName: z.string().min(1),
+      email: z.string().email(),
+      phone: z.string().max(30).optional(),
+      password: z.string().min(8).optional(),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const body = req.body as {
+      firstName: string;
+      lastName: string;
+      email: string;
+      phone?: string;
+      password?: string;
+    };
+
+    const email = body.email.toLowerCase();
+    // Platform accounts hold no schoolId, so the per-school unique constraint
+    // does not apply to them and a duplicate must be caught here.
+    const clash = await prisma.user.findFirst({ where: { email, schoolId: null } });
+    if (clash) throw badRequest(`${email} is already a platform administrator.`);
+
+    const temporaryPassword = body.password ?? `Sms-${randomToken(5)}`;
+
+    const user = await prisma.user.create({
+      data: {
+        schoolId: null,
+        email,
+        phone: body.phone ?? null,
+        firstName: body.firstName,
+        lastName: body.lastName,
+        role: Role.SUPER_ADMIN,
+        passwordHash: await hashPassword(temporaryPassword),
+        mustChangePassword: !body.password,
+      },
+      select: platformUserSelect,
+    });
+
+    await audit(req, { action: 'platform.user_create', entityType: 'User', entityId: user.id });
+    res.status(201).json({ ...user, ...(body.password ? {} : { temporaryPassword }) });
+  }),
+);
+
+platformRouter.patch(
+  '/users/:id',
+  validate(
+    z.object({
+      firstName: z.string().min(1).optional(),
+      lastName: z.string().min(1).optional(),
+      phone: z.string().max(30).nullish(),
+      status: z.nativeEnum(UserStatus).optional(),
+    }),
+  ),
+  asyncHandler(async (req, res) => {
+    const id = req.params.id as string;
+    const body = req.body as { status?: UserStatus };
+
+    const existing = await prisma.user.findFirst({ where: { id, role: Role.SUPER_ADMIN } });
+    if (!existing) throw notFound('Platform administrator');
+
+    if (body.status && body.status !== UserStatus.ACTIVE) {
+      if (id === req.user?.id) throw badRequest('You cannot disable your own account.');
+      if ((await otherActiveAdmins(id)) === 0) {
+        throw badRequest(
+          'This is the last active platform administrator. Add another before disabling this one.',
+        );
+      }
+    }
+
+    const user = await prisma.user.update({
+      where: { id },
+      data: req.body,
+      select: platformUserSelect,
+    });
+
+    if (body.status && body.status !== UserStatus.ACTIVE) {
+      await prisma.session.updateMany({
+        where: { userId: id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    }
+
+    await audit(req, {
+      action: 'platform.user_update',
+      entityType: 'User',
+      entityId: id,
+      metadata: req.body,
+    });
+    res.json(user);
+  }),
+);
+
+platformRouter.post(
+  '/users/:id/reset-password',
+  asyncHandler(async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await prisma.user.findFirst({ where: { id, role: Role.SUPER_ADMIN } });
+    if (!existing) throw notFound('Platform administrator');
+
+    const temporaryPassword = `Sms-${randomToken(5)}`;
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id },
+        data: {
+          passwordHash: await hashPassword(temporaryPassword),
+          mustChangePassword: true,
+          failedLoginCount: 0,
+          lockedUntil: null,
+        },
+      }),
+      prisma.session.updateMany({
+        where: { userId: id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
+
+    await audit(req, {
+      action: 'platform.user_reset_password',
+      entityType: 'User',
+      entityId: id,
+    });
+    res.json({ temporaryPassword });
+  }),
+);
+
+platformRouter.delete(
+  '/users/:id',
+  asyncHandler(async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await prisma.user.findFirst({ where: { id, role: Role.SUPER_ADMIN } });
+    if (!existing) throw notFound('Platform administrator');
+
+    if (id === req.user?.id) throw badRequest('You cannot delete your own account.');
+    if ((await otherActiveAdmins(id)) === 0) {
+      throw badRequest(
+        'This is the last active platform administrator. Add another before deleting this one.',
+      );
+    }
+
+    const auditCount = await prisma.auditLog.count({ where: { userId: id } });
+    if (existing.lastLoginAt || auditCount > 0) {
+      throw badRequest(
+        'This account has been used, so deleting it would leave its actions recorded ' +
+          'against nobody. Disable it instead — that stops the sign-in and keeps the history.',
+      );
+    }
+
+    await prisma.user.delete({ where: { id } });
+    await audit(req, {
+      action: 'platform.user_delete',
+      entityType: 'User',
+      entityId: id,
+      metadata: { email: existing.email },
+    });
     res.status(204).send();
   }),
 );

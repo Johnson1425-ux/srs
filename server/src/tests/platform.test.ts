@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { Role, SchoolStatus } from '@prisma/client';
+import { Role, SchoolStatus, UserStatus } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { app, TEST_PASSWORD, uid } from './fixtures.js';
 import { hashPassword } from '../lib/tokens.js';
@@ -137,6 +137,111 @@ describe('platform administration', () => {
     expect(await prisma.school.findUnique({ where: { id: school.id } })).toBeNull();
     // The tenant's rows go with it rather than being orphaned.
     expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+  });
+
+  it('adds a platform administrator with a one-time password', async () => {
+    const email = `newroot.${uid()}@example.test`;
+    const res = await request(app)
+      .post('/api/v1/platform/users')
+      .set(authed())
+      .send({ firstName: 'Second', lastName: 'Admin', email });
+
+    expect(res.status).toBe(201);
+    expect(res.body.temporaryPassword).toBeTruthy();
+
+    // They can sign in straight away, with no school of their own.
+    const login = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email, password: res.body.temporaryPassword });
+    expect(login.body.accessToken).toBeTruthy();
+
+    const created = await prisma.user.findFirstOrThrow({ where: { email } });
+    expect(created).toMatchObject({ role: Role.SUPER_ADMIN, schoolId: null, mustChangePassword: true });
+  });
+
+  it('refuses a duplicate platform email', async () => {
+    const email = `dupe.${uid()}@example.test`;
+    await request(app)
+      .post('/api/v1/platform/users')
+      .set(authed())
+      .send({ firstName: 'First', lastName: 'Admin', email });
+
+    const again = await request(app)
+      .post('/api/v1/platform/users')
+      .set(authed())
+      .send({ firstName: 'Second', lastName: 'Admin', email });
+
+    expect(again.status).toBe(400);
+  });
+
+  it('will not let an administrator disable or delete their own account', async () => {
+    const me = await prisma.user.findFirstOrThrow({ where: { email: rootEmail } });
+
+    const disable = await request(app)
+      .patch(`/api/v1/platform/users/${me.id}`)
+      .set(authed())
+      .send({ status: UserStatus.DISABLED });
+    expect(disable.status).toBe(400);
+
+    const remove = await request(app).delete(`/api/v1/platform/users/${me.id}`).set(authed());
+    expect(remove.status).toBe(400);
+
+    // Still able to administer the platform, so nobody is locked out of it.
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: me.id } });
+    expect(after.status).toBe(UserStatus.ACTIVE);
+  });
+
+  it('disables another administrator and ends their sessions', async () => {
+    const email = `retiring.${uid()}@example.test`;
+    const created = await request(app)
+      .post('/api/v1/platform/users')
+      .set(authed())
+      .send({ firstName: 'Retiring', lastName: 'Admin', email });
+
+    await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email, password: created.body.temporaryPassword });
+
+    const res = await request(app)
+      .patch(`/api/v1/platform/users/${created.body.id}`)
+      .set(authed())
+      .send({ status: UserStatus.DISABLED });
+
+    expect(res.status).toBe(200);
+    expect(
+      await prisma.session.count({ where: { userId: created.body.id, revokedAt: null } }),
+    ).toBe(0);
+
+    const login = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email, password: created.body.temporaryPassword });
+    expect(login.body.accessToken).toBeUndefined();
+  });
+
+  it('resets an administrator password and ends their sessions', async () => {
+    const email = `resettable.${uid()}@example.test`;
+    const created = await request(app)
+      .post('/api/v1/platform/users')
+      .set(authed())
+      .send({ firstName: 'Reset', lastName: 'Me', email });
+
+    await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email, password: created.body.temporaryPassword });
+
+    const res = await request(app)
+      .post(`/api/v1/platform/users/${created.body.id}/reset-password`)
+      .set(authed());
+
+    expect(res.status).toBe(200);
+    expect(
+      await prisma.session.count({ where: { userId: created.body.id, revokedAt: null } }),
+    ).toBe(0);
+
+    const login = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email, password: res.body.temporaryPassword });
+    expect(login.body.accessToken).toBeTruthy();
   });
 
   it('keeps platform administration away from a school administrator', async () => {

@@ -16,7 +16,8 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset --force",
-    "bootstrap": "tsx src/scripts/bootstrap.ts"
+    "bootstrap": "tsx src/scripts/bootstrap.ts",
+    "bootstrap:platform": "tsx src/scripts/bootstrap-platform.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
