@@ -1,0 +1,79 @@
+# Render blueprint for the API.
+#
+# Deploy with: Render dashboard → New → Blueprint → pick this repository.
+# The frontend lives on Vercel (see web/vercel.json), and the database is
+# managed elsewhere — Neon, Supabase or Render Postgres — so this file
+# describes one web service and nothing else.
+#
+# Render `cd`s into the root directory before running npm, and `npm ci` fails
+# inside `server/` because npm workspaces keep a single lockfile at the
+# repository root. So the root directory stays blank and the workspace is
+# addressed by flag.
+services:
+  - type: web
+    name: sms-api
+    runtime: node
+    plan: free
+    # Free instances spin down after 15 minutes of inactivity and take a few
+    # seconds to wake. Move to `starter` before anyone depends on the API.
+    healthCheckPath: /health
+    autoDeploy: true
+
+    # Migrations run last, so a compile error stops the deploy before it
+    # touches the database. On a paid plan, move this final step into
+    # `preDeployCommand` below instead — it then runs once per deploy rather
+    # than once per build, which is what you want with more than one instance.
+    buildCommand: >-
+      npm ci --workspace=server --include-workspace-root &&
+      npm run build --workspace=server &&
+      npm run db:deploy --workspace=server
+    # preDeployCommand: npm run db:deploy --workspace=server   # paid plans only
+
+    startCommand: node server/dist/index.js
+
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+
+      # Render injects PORT and the app reads it; do not set it here.
+
+      # Pooled connection for the running API. Neon: the `-pooler` host with
+      # ?sslmode=require&pgbouncer=true appended. Never include
+      # channel_binding=require — Prisma's connector does not support SCRAM
+      # channel binding and the connection drops with `Error { kind: Closed }`.
+      - key: DATABASE_URL
+        sync: false
+
+      # Direct connection for migrations, which issue statements a
+      # transaction-mode pooler cannot carry. Neon: the same host *without*
+      # `-pooler`, ?sslmode=require. With no pooler at all, set it to the same
+      # value as DATABASE_URL — it is required either way.
+      - key: DIRECT_URL
+        sync: false
+
+      # The Vercel origin allowed to call this API, e.g.
+      # https://your-app.vercel.app. Comma-separated for more than one.
+      - key: CORS_ORIGIN
+        sync: false
+
+      # Generated once, on first deploy. Rotating either invalidates every
+      # session, so change them deliberately rather than by redeploying.
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+
+      # saas = one deployment serving many schools; standalone = a single
+      # school that owns its installation.
+      - key: DEPLOYMENT_MODE
+        value: saas
+
+      # Left at `none`, SMS and email are recorded in the outbox with status
+      # QUEUED and nothing is dispatched. Configure them in the dashboard when
+      # you are ready to send — see the README.
+      - key: SMS_PROVIDER
+        value: none
+      - key: EMAIL_PROVIDER
+        value: none

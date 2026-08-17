@@ -379,14 +379,20 @@ asset caching — the jobs nginx does in the self-hosted setup.
 **Vercel** — Root Directory `web`, environment variable
 `VITE_API_URL=https://your-api.onrender.com`.
 
-**Render** — leave Root Directory **blank**. Render `cd`s into it and runs npm
-there, and `npm ci` fails inside `server/` because npm workspaces keep a single
-lockfile at the repository root. Address the workspace by flag instead:
+**Render** — `render.yaml` at the repository root describes the API service, so
+the quickest route is **New → Blueprint** and pick this repository. Render reads
+the build, start and health-check settings from the file, generates both `JWT_*`
+secrets for you, and prompts for the three values it cannot know:
+`DATABASE_URL`, `DIRECT_URL` and `CORS_ORIGIN`.
+
+To set the service up by hand instead, leave Root Directory **blank**. Render
+`cd`s into it and runs npm there, and `npm ci` fails inside `server/` because npm
+workspaces keep a single lockfile at the repository root. Address the workspace
+by flag instead:
 
 | Field | Value |
 | --- | --- |
-| Build Command | `npm ci && npm run build --workspace=server` |
-| Pre-Deploy Command | `npx prisma migrate deploy --schema server/prisma/schema.prisma` |
+| Build Command | `npm ci --workspace=server --include-workspace-root && npm run build --workspace=server && npm run db:deploy --workspace=server` |
 | Start Command | `node server/dist/index.js` |
 | Health Check Path | `/health` |
 
@@ -394,6 +400,24 @@ Set `DATABASE_URL`, `DIRECT_URL`, both `JWT_*` secrets and
 `CORS_ORIGIN=https://your-app.vercel.app`. Leave `PORT` alone — Render injects
 it. Prefer Render's native Node runtime over the Dockerfile; both work, but the
 native runtime needs no container build.
+
+**Where migrations run.** `prisma migrate deploy` is the last step of the build
+command above rather than a Pre-Deploy Command, because Pre-Deploy is a paid
+feature and the build environment already has the database variables. Migrations
+therefore apply once per *build*. On a paid plan — and certainly before running
+more than one instance — move that step to the Pre-Deploy Command, where it runs
+once per deploy with no chance of two builds racing:
+
+```
+npm run db:deploy --workspace=server
+```
+
+`render.yaml` carries the same step commented out, ready to uncomment.
+
+**Free instances sleep.** A free web service spins down after 15 minutes idle and
+takes a few seconds to answer the request that wakes it; a free Neon database
+autosuspends much the same way. The first login after a quiet spell is slow, and
+that is the plan working as sold, not a bug.
 
 #### Connecting to a pooled database
 
@@ -409,12 +433,54 @@ pooler cannot carry. With no pooler, set it to the same value as
 
 Do not include `channel_binding=require` in a Neon connection string — Prisma's
 connector does not support SCRAM channel binding and the connection will drop
-with `Error { kind: Closed }`.
+with `Error { kind: Closed }`. Neon's dashboard includes it by default, so the
+string you copy needs editing before it is pasted into Render. In full, a Neon
+pair looks like this — the two differ only in the host and the query string:
+
+```
+DATABASE_URL=postgresql://user:pass@ep-xxx-pooler.eu-central-1.aws.neon.tech/sms?sslmode=require&pgbouncer=true
+DIRECT_URL=postgresql://user:pass@ep-xxx.eu-central-1.aws.neon.tech/sms?sslmode=require
+```
+
+Both are validated at boot, so a forgotten `DIRECT_URL` is reported by name in
+the Render logs rather than surfacing later as a migration failure.
 
 Note that the API calls `prisma.$connect()` before it listens, so an
 unreachable database means the process exits rather than serving errors. If the
 frontend reports a network failure and the logs never print
 `SMS API listening`, the connection string is the place to look.
+
+#### Creating the first account
+
+Migrations leave an empty database, and nobody can sign in to a deployment with
+no users. `npm run bootstrap` creates the first school and its administrator,
+but Render's Shell is a paid feature — on a free instance there is no terminal
+to run it in. Use the build command for the one-off instead.
+
+Set these on the service, temporarily:
+
+```
+SCHOOL_NAME=Mlimani Secondary
+SCHOOL_CODE=MLM
+ADMIN_FIRST_NAME=Ada
+ADMIN_LAST_NAME=Mushi
+ADMIN_EMAIL=admin@your-school.ac.tz
+```
+
+Append the script to the Build Command, deploy once, then **remove it again**:
+
+```
+... && npm run bootstrap --workspace=server
+```
+
+The script reads those variables instead of prompting when no terminal is
+attached, and prints the generated password in the build log. Sign in with it
+once — the account is flagged `mustChangePassword`, so the first sign-in forces
+a new one — then delete the five variables and the appended command.
+
+Do **not** use `npm run db:seed` for this. It builds the demo school with
+hundreds of fictional students and well-known passwords (`Passw0rd!`), which is
+a fine sandbox and a bad production database.
 
 #### Optional: proxy `/api` through Vercel
 
