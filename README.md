@@ -703,9 +703,11 @@ Stated plainly, with reasons:
    verification flow is not built.
 
 4. **Payment gateway integration.** Mobile-money payments are recorded with
-   provider and transaction reference, and the schema and webhook secret are in
-   place, but no live M-Pesa/Airtel/Mixx/HaloPesa API calls are made — those need
-   merchant credentials. The PRD places this in Phase 3.
+   provider and transaction reference, but no live M-Pesa/Airtel/Mixx/HaloPesa
+   API calls are made and there is no webhook endpoint — both need merchant
+   credentials. The PRD places this in Phase 3. Nor is there any billing for
+   the subscriptions themselves: a plan is set by platform staff, not paid for
+   online.
 
    SMS and email **are** wired up — Africa's Talking and SMTP respectively.
    See the deployment section.
