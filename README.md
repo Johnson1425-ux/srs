@@ -391,7 +391,7 @@ the repository root. Address the workspace by flag instead:
 | --- | --- |
 | Root Directory | *(blank)* |
 | Runtime | `Node` |
-| Build Command | `npm ci --workspace=server --include-workspace-root && npm run build --workspace=server && npm run db:deploy --workspace=server` |
+| Build Command | `npm ci --workspace=server --include-workspace-root --include=dev && npm run build --workspace=server && npm run db:deploy --workspace=server` |
 | Start Command | `node server/dist/index.js` |
 | Health Check Path | `/health` |
 
@@ -411,6 +411,18 @@ Then add the environment variables:
 Leave `PORT` alone — Render injects it and the app reads it. Everything else has
 a working default: SMS and email stay in the outbox until configured, so the
 list above is the whole of what a first deploy needs.
+
+**Why `--include=dev`.** npm omits `devDependencies` whenever `NODE_ENV` is
+`production`, and the build genuinely needs them — `typescript` and
+`@types/node` are both dev dependencies, so without the flag `tsc` stops at
+
+```
+error TS2688: Cannot find type definition file for 'node'.
+```
+
+The flag is explicit rather than relying on `NODE_ENV`, because Render applies
+the same environment to the build and to the running service. The compiled
+output in `server/dist` does not use any of it.
 
 **Where migrations run.** `prisma migrate deploy` is the last step of the build
 command rather than a Pre-Deploy Command, because Pre-Deploy is a paid feature —
@@ -475,7 +487,7 @@ the server to run it in — but there does not need to be. A hosted database
 machine, pointed at production:
 
 ```bash
-npm ci --workspace=server --include-workspace-root
+npm ci --workspace=server --include-workspace-root --include=dev
 npm run db:generate --workspace=server        # bootstrap needs the Prisma client
 
 export DATABASE_URL="postgresql://…-pooler…/sms?sslmode=require&pgbouncer=true"
