@@ -66,6 +66,9 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
       { label: 'Users', to: '/users', icon: '🔑', permissions: ['users:read'] },
       { label: 'Settings', to: '/settings', icon: '⚙', permissions: ['school:read'] },
       { label: 'Schools (SaaS)', to: '/platform', icon: '🏫', roles: ['SUPER_ADMIN'] },
+      // Everyone has an account to look after, including platform staff who
+      // belong to no school and so never see the school-scoped Settings page.
+      { label: 'My account', to: '/account', icon: '👤' },
     ],
   },
 ];
@@ -97,8 +100,18 @@ export function AppLayout() {
       // Platform administration does not exist on a standalone installation.
       if (isStandalone && item.to === '/platform') return false;
       // A super admin with no school selected can only reach platform routes;
-      // every other page would fail server-side for want of a tenant.
-      if (isPlatformStaff && !activeSchoolId && item.to !== '/platform') return false;
+      // every other page would fail server-side for want of a tenant. Their own
+      // account is the exception — it belongs to the person, not to a school.
+      if (
+        isPlatformStaff &&
+        !activeSchoolId &&
+        item.to !== '/platform' &&
+        item.to !== '/account'
+      ) {
+        return false;
+      }
+      // No gate means everyone: nothing on such a page is school-scoped.
+      if (!item.roles && !item.permissions) return true;
       if (item.roles && hasRole(...item.roles)) return true;
       if (item.permissions && can(...item.permissions)) return true;
       return false;

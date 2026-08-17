@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
-import { get, patch, post } from '../lib/api';
+import { del, get, patch, post } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { date, titleCase } from '../lib/format';
 import {
+  ActionMenu,
   Badge,
   Card,
   EmptyState,
@@ -17,6 +19,13 @@ import {
   TableWrap,
 } from '../components/ui';
 
+interface SubscriptionForm {
+  plan: string;
+  planEndsAt: string;
+  maxStudents: number;
+  storageQuotaMb: number;
+}
+
 interface SchoolRow {
   id: string;
   name: string;
@@ -25,6 +34,7 @@ interface SchoolRow {
   status: string;
   plan: string;
   maxStudents: number;
+  storageQuotaMb: number;
   planEndsAt: string | null;
   createdAt: string;
   _count: { users: number; students: number; staff: number };
@@ -54,14 +64,28 @@ interface OnboardForm {
 
 const PLANS = ['TRIAL', 'BASIC', 'STANDARD', 'PREMIUM'] as const;
 
+/** Mirrors the server's plan limits, so choosing a plan shows what it grants. */
+const PLAN_LIMITS: Record<string, { maxStudents: number; storageQuotaMb: number }> = {
+  TRIAL: { maxStudents: 100, storageQuotaMb: 512 },
+  BASIC: { maxStudents: 500, storageQuotaMb: 2048 },
+  STANDARD: { maxStudents: 2000, storageQuotaMb: 10240 },
+  PREMIUM: { maxStudents: 5000, storageQuotaMb: 51200 },
+};
+
 /** Module 22 — multi-school SaaS administration, super admin only. */
 export function PlatformPage() {
-  const { hasRole } = useAuth();
+  const { hasRole, setActiveSchool } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [created, setCreated] = useState<{ email: string; password: string; school: string } | null>(
     null,
   );
+  const [editing, setEditing] = useState<SchoolRow | null>(null);
+  const [deleting, setDeleting] = useState<SchoolRow | null>(null);
+  const [confirmCode, setConfirmCode] = useState('');
+
+  const subscriptionForm = useForm<SubscriptionForm>();
 
   const schools = useQuery({
     queryKey: ['platform', 'schools'],
@@ -113,6 +137,50 @@ export function PlatformPage() {
       patch(`/platform/schools/${id}`, { status }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['platform'] }),
   });
+
+  const saveSubscription = useMutation({
+    mutationFn: (values: SubscriptionForm & { id: string }) =>
+      patch(`/platform/schools/${values.id}`, {
+        plan: values.plan,
+        planEndsAt: values.planEndsAt || undefined,
+        maxStudents: Number(values.maxStudents),
+        storageQuotaMb: Number(values.storageQuotaMb),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['platform'] });
+      setEditing(null);
+    },
+  });
+
+  const removeSchool = useMutation({
+    mutationFn: (school: SchoolRow) =>
+      del(`/platform/schools/${school.id}`, { confirmCode }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['platform'] });
+      setDeleting(null);
+      setConfirmCode('');
+    },
+  });
+
+  const openSubscription = (school: SchoolRow) => {
+    subscriptionForm.reset({
+      plan: school.plan,
+      planEndsAt: school.planEndsAt ? school.planEndsAt.slice(0, 10) : '',
+      maxStudents: school.maxStudents,
+      storageQuotaMb: school.storageQuotaMb,
+    });
+    setEditing(school);
+  };
+
+  /**
+   * Enters a school and goes to its records. Platform staff belong to no
+   * school, so without this every school-scoped screen — its users, its fees —
+   * is unreachable, which is not obvious from a page listing schools.
+   */
+  const openSchool = (school: SchoolRow) => {
+    setActiveSchool(school.id);
+    navigate('/users');
+  };
 
   if (!hasRole('SUPER_ADMIN')) {
     return (
@@ -200,23 +268,34 @@ export function PlatformPage() {
                         <Badge status={s.status} />
                       </td>
                       <td className="text-right">
-                        {s.status === 'SUSPENDED' ? (
-                          <button
-                            type="button"
-                            className="text-sm text-emerald-700 hover:underline"
-                            onClick={() => setStatus.mutate({ id: s.id, status: 'ACTIVE' })}
-                          >
-                            Reactivate
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="text-sm text-red-700 hover:underline"
-                            onClick={() => setStatus.mutate({ id: s.id, status: 'SUSPENDED' })}
-                          >
-                            Suspend
-                          </button>
-                        )}
+                        <ActionMenu
+                          items={[
+                            { label: 'Open this school', onClick: () => openSchool(s) },
+                            { label: 'Manage subscription', onClick: () => openSubscription(s) },
+                            s.status === 'SUSPENDED'
+                              ? {
+                                  label: 'Reactivate',
+                                  onClick: () => setStatus.mutate({ id: s.id, status: 'ACTIVE' }),
+                                }
+                              : {
+                                  label: 'Suspend',
+                                  onClick: () =>
+                                    setStatus.mutate({ id: s.id, status: 'SUSPENDED' }),
+                                  danger: true,
+                                },
+                            {
+                              label: 'Delete school',
+                              onClick: () => {
+                                setConfirmCode('');
+                                setDeleting(s);
+                              },
+                              danger: true,
+                              // Deleting destroys the records, so service must
+                              // be stopped as a separate, earlier decision.
+                              disabled: s.status === 'ACTIVE' || s.status === 'TRIAL',
+                            },
+                          ]}
+                        />
                       </td>
                     </tr>
                   );
@@ -305,6 +384,132 @@ export function PlatformPage() {
               </button>
             </div>
           </form>
+        </Modal>
+      )}
+
+      {editing && (
+        <Modal title={`Subscription — ${editing.name}`} onClose={() => setEditing(null)}>
+          <form
+            onSubmit={subscriptionForm.handleSubmit((v) =>
+              saveSubscription.mutate({ ...v, id: editing.id }),
+            )}
+            className="space-y-4"
+            noValidate
+          >
+            {saveSubscription.error != null && <ErrorNote error={saveSubscription.error} />}
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Plan" required>
+                <select
+                  className="input"
+                  {...subscriptionForm.register('plan', {
+                    required: true,
+                    onChange: (e) => {
+                      const limits = PLAN_LIMITS[e.target.value];
+                      if (!limits) return;
+                      subscriptionForm.setValue('maxStudents', limits.maxStudents);
+                      subscriptionForm.setValue('storageQuotaMb', limits.storageQuotaMb);
+                    },
+                  })}
+                >
+                  {PLANS.map((p) => (
+                    <option key={p} value={p}>
+                      {titleCase(p)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Renews on" hint="When the current subscription period ends.">
+                <input type="date" className="input" {...subscriptionForm.register('planEndsAt')} />
+              </Field>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field
+                label="Student limit"
+                required
+                hint={`Currently using ${editing._count.students}.`}
+              >
+                <input
+                  type="number"
+                  min={1}
+                  className="input"
+                  {...subscriptionForm.register('maxStudents', { required: true, min: 1 })}
+                />
+              </Field>
+              <Field label="Storage quota (MB)" required>
+                <input
+                  type="number"
+                  min={1}
+                  className="input"
+                  {...subscriptionForm.register('storageQuotaMb', { required: true, min: 1 })}
+                />
+              </Field>
+            </div>
+
+            <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+              Choosing a plan fills in its standard limits. Change either figure afterwards to
+              agree something different with this school.
+            </p>
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button type="button" className="btn-secondary" onClick={() => setEditing(null)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn-primary" disabled={saveSubscription.isPending}>
+                {saveSubscription.isPending ? 'Saving…' : 'Save subscription'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {deleting && (
+        <Modal title={`Delete ${deleting.name}?`} onClose={() => setDeleting(null)}>
+          <div className="space-y-4">
+            {removeSchool.error != null && <ErrorNote error={removeSchool.error} />}
+
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+              This permanently destroys <strong>{deleting._count.students} student records</strong>,{' '}
+              {deleting._count.users} user accounts, and every result, invoice, payment and ledger
+              entry belonging to this school. It cannot be undone and there is no export afterwards.
+            </div>
+
+            <p className="text-sm text-slate-600">
+              If the school has only stopped paying, close this and leave it suspended instead —
+              their data is kept and they can be reactivated at any time.
+            </p>
+
+            <Field
+              label={`Type ${deleting.code} to confirm`}
+              required
+              hint="This is deliberately awkward."
+            >
+              <input
+                className="input font-mono"
+                value={confirmCode}
+                onChange={(e) => setConfirmCode(e.target.value)}
+                autoComplete="off"
+              />
+            </Field>
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button type="button" className="btn-secondary" onClick={() => setDeleting(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-danger"
+                disabled={
+                  removeSchool.isPending ||
+                  confirmCode.trim().toUpperCase() !== deleting.code.toUpperCase()
+                }
+                onClick={() => removeSchool.mutate(deleting)}
+              >
+                {removeSchool.isPending ? 'Deleting…' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
         </Modal>
       )}
 

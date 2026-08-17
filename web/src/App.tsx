@@ -27,6 +27,7 @@ import { CommunicationPage } from './pages/CommunicationPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UsersPage } from './pages/UsersPage';
+import { AccountPage } from './pages/AccountPage';
 import { PlatformPage } from './pages/PlatformPage';
 import { PortalPage } from './pages/PortalPage';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -252,6 +253,7 @@ export function App() {
             </RequirePermission>
           }
         />
+        <Route path="account" element={<AccountPage />} />
         <Route path="platform" element={<PlatformPage />} />
 
         <Route path="*" element={<NotFoundPage />} />

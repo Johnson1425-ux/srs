@@ -140,7 +140,9 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 export const get = <T,>(path: string) => api<T>(path);
 export const post = <T,>(path: string, body?: unknown) => api<T>(path, { method: 'POST', body });
 export const patch = <T,>(path: string, body?: unknown) => api<T>(path, { method: 'PATCH', body });
-export const del = <T,>(path: string) => api<T>(path, { method: 'DELETE' });
+/** A body is optional, and used where a delete must be confirmed explicitly. */
+export const del = <T,>(path: string, body?: unknown) =>
+  api<T>(path, { method: 'DELETE', body });
 
 /** Triggers a browser download for the CSV export endpoints. */
 export async function download(path: string, filename: string): Promise<void> {

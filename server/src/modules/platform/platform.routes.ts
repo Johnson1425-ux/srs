@@ -6,7 +6,7 @@ import { asyncHandler, paginate, paginationSchema, skipTake, validate } from '..
 import { requireRole } from '../../middleware/auth.js';
 import { hashPassword, randomToken } from '../../lib/tokens.js';
 import { audit } from '../../lib/audit.js';
-import { notFound } from '../../lib/errors.js';
+import { badRequest, notFound } from '../../lib/errors.js';
 
 /** Module 22 — Super Admin (multi-school SaaS administration). */
 export const platformRouter: Router = Router();
@@ -205,6 +205,68 @@ platformRouter.patch(
       metadata: body,
     });
     res.json(school);
+  }),
+);
+
+/**
+ * Removes a school and everything belonging to it.
+ *
+ * Irreversible, and it takes the students, results, invoices, payments and
+ * ledger with it. Two conditions guard it. The school must already be
+ * suspended or inactive, so a live tenant cannot be deleted by a misplaced
+ * click — ending service is a decision taken before the data is destroyed,
+ * not at the same moment. And the caller must quote the school's code back,
+ * which no accidental request will do.
+ *
+ * Suspension remains the right answer for a school that has stopped paying:
+ * it ends access immediately and the data is still there when they return.
+ */
+platformRouter.delete(
+  '/schools/:id',
+  validate(z.object({ confirmCode: z.string().min(1) })),
+  asyncHandler(async (req, res) => {
+    const id = req.params.id as string;
+    const { confirmCode } = req.body as { confirmCode: string };
+
+    const school = await prisma.school.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        status: true,
+        _count: { select: { students: true, users: true } },
+      },
+    });
+    if (!school) throw notFound('School');
+
+    if (school.status === SchoolStatus.ACTIVE || school.status === SchoolStatus.TRIAL) {
+      throw badRequest(
+        `${school.name} is still ${school.status.toLowerCase()}. Suspend it first — deleting a ` +
+          'school destroys its students, results and financial records permanently.',
+      );
+    }
+
+    if (confirmCode.trim().toUpperCase() !== school.code.toUpperCase()) {
+      throw badRequest(`Type the school code ${school.code} exactly to confirm.`);
+    }
+
+    // Every child row cascades from the school, so one delete is enough.
+    await prisma.school.delete({ where: { id } });
+
+    await audit(req, {
+      action: 'platform.school_delete',
+      entityType: 'School',
+      entityId: id,
+      metadata: {
+        name: school.name,
+        code: school.code,
+        students: school._count.students,
+        users: school._count.users,
+      },
+    });
+
+    res.status(204).send();
   }),
 );
 
