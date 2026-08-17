@@ -18,7 +18,23 @@ const schema = z.object({
   DEPLOYMENT_MODE: z.enum(['saas', 'standalone']).default('saas'),
 
   PORT: z.coerce.number().int().positive().default(4000),
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  // `required_error` covers the variable being absent; `min(1)` covers it
+  // being present but empty. Without both, an unset value reports only the
+  // bare word "Required".
+  DATABASE_URL: z
+    .string({ required_error: 'DATABASE_URL is required' })
+    .min(1, 'DATABASE_URL is required'),
+  /**
+   * Prisma resolves this when it loads the schema, so a missing value fails
+   * inside the query engine rather than here. Validating it alongside
+   * DATABASE_URL turns that into a named error at boot. Where there is no
+   * pooler, it is simply the same connection string.
+   */
+  DIRECT_URL: z
+    .string({
+      required_error: 'DIRECT_URL is required — set it to DATABASE_URL when there is no pooler',
+    })
+    .min(1, 'DIRECT_URL is required — set it to DATABASE_URL when there is no pooler'),
   TEST_DATABASE_URL: z.string().optional(),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
 
