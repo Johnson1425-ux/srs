@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { ExamStatus, ExamType, StudentStatus } from '@prisma/client';
+import { ExamStatus, ExamType, MessageChannel, StudentStatus } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../db/prisma.js';
 import { asyncHandler, validate } from '../../lib/http.js';
@@ -7,6 +7,9 @@ import { requirePermission, schoolIdOf } from '../../middleware/auth.js';
 import { audit } from '../../lib/audit.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import * as service from './exam.service.js';
+import { buildResultNotices } from './exam.service.js';
+import { queueMessages, smsSegments } from '../communication/message.service.js';
+import { smsConfigured } from '../../config/env.js';
 
 /** Module 9 — Examinations. */
 export const examRouter: Router = Router();
@@ -218,7 +221,61 @@ examRouter.post(
       data: { status: ExamStatus.PUBLISHED, publishedAt: new Date() },
     });
     await audit(req, { action: 'exam.publish', entityType: 'Exam', entityId: id });
-    res.json(updated);
+
+    // Publishing only makes results visible in the portal. Most parents never
+    // sign in, so telling them is a separate, deliberate step — it costs the
+    // school SMS credit, and the school decides when to spend it.
+    let notified: { queued: number; withoutContact: string[] } | null = null;
+    if ((req.body as { notifyGuardians?: boolean }).notifyGuardians) {
+      const { notices, withoutContact } = await buildResultNotices(schoolId, id);
+      const { queued } = await queueMessages(
+        schoolId,
+        notices.map((n) => ({
+          channel: MessageChannel.SMS,
+          recipient: n.phone,
+          subject: null,
+          body: n.body,
+        })),
+      );
+      await audit(req, {
+        action: 'exam.notify_guardians',
+        entityType: 'Exam',
+        entityId: id,
+        metadata: { queued, missed: withoutContact.length },
+      });
+      notified = { queued, withoutContact };
+    }
+
+    res.json({ ...updated, notified });
+  }),
+);
+
+/**
+ * What notifying parents would cost, before committing to it.
+ *
+ * Shown on the publish dialog so the office sees how many messages it is about
+ * to send, roughly what they will be billed as, and which families have no
+ * telephone number on file and will have to be told another way.
+ */
+examRouter.get(
+  '/:id/notify-preview',
+  requirePermission('exams:publish'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+
+    const { notices, withoutContact } = await buildResultNotices(schoolId, id);
+    const sample = notices[0]?.body ?? null;
+
+    res.json({
+      recipients: notices.length,
+      withoutContact,
+      sample,
+      // Gateways bill per 160-character segment, and a long school or student
+      // name can quietly push a message into a second one.
+      segments: notices.reduce((total, n) => total + smsSegments(n.body), 0),
+      configured: smsConfigured,
+    });
   }),
 );
 

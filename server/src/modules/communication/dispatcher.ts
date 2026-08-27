@@ -2,6 +2,7 @@ import { MessageChannel, MessageStatus } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { emailConfigured, env, smsConfigured } from '../../config/env.js';
 import { AfricasTalkingProvider } from './providers/africastalking.js';
+import { NextSmsProvider } from './providers/nextsms.js';
 import { SmtpProvider } from './providers/smtp.js';
 import type { DeliveryResult, EmailProvider, SmsProvider } from './providers/types.js';
 
@@ -20,7 +21,8 @@ export function setEmailProvider(next: EmailProvider | null): void {
 function activeSmsProvider(): SmsProvider | null {
   if (smsProvider) return smsProvider;
   if (!smsConfigured) return null;
-  smsProvider = new AfricasTalkingProvider();
+  smsProvider =
+    env.SMS_PROVIDER === 'nextsms' ? new NextSmsProvider() : new AfricasTalkingProvider();
   return smsProvider;
 }
 

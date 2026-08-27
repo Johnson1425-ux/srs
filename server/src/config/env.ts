@@ -48,7 +48,7 @@ const schema = z.object({
 
   // `none` keeps SMS in the outbox without dispatching — the default, so a
   // development machine never spends real credit or texts real parents.
-  SMS_PROVIDER: z.enum(['none', 'africastalking']).default('none'),
+  SMS_PROVIDER: z.enum(['none', 'africastalking', 'nextsms']).default('none'),
   SMS_SENDER_ID: z.string().default('SCHOOL'),
   /** How many delivery attempts before a message is left FAILED. */
   SMS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
@@ -62,6 +62,20 @@ const schema = z.object({
     .transform((v) => v === 'true'),
   /** Overrides the gateway endpoint — for an outbound proxy, or a stub in testing. */
   AFRICASTALKING_BASE_URL: z.string().url().optional(),
+
+  // NextSMS (messaging-service.co.tz), a Tanzanian gateway. Authenticates with
+  // the same username and password used on their dashboard.
+  NEXTSMS_USERNAME: z.string().optional(),
+  NEXTSMS_PASSWORD: z.string().optional(),
+  /**
+   * Sends to their /test path, which validates the request and reports back
+   * without delivering anything or spending credit.
+   */
+  NEXTSMS_TEST_MODE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  NEXTSMS_BASE_URL: z.string().url().optional(),
 
   // `none` keeps email in the outbox without dispatching, mirroring SMS.
   EMAIL_PROVIDER: z.enum(['none', 'smtp']).default('none'),
@@ -105,8 +119,9 @@ export const isTest = env.NODE_ENV === 'test';
  * loudly at boot-time reasoning rather than silently at 3am.
  */
 export const smsConfigured =
-  env.SMS_PROVIDER === 'africastalking' &&
-  Boolean(env.AFRICASTALKING_USERNAME && env.AFRICASTALKING_API_KEY);
+  (env.SMS_PROVIDER === 'africastalking' &&
+    Boolean(env.AFRICASTALKING_USERNAME && env.AFRICASTALKING_API_KEY)) ||
+  (env.SMS_PROVIDER === 'nextsms' && Boolean(env.NEXTSMS_USERNAME && env.NEXTSMS_PASSWORD));
 
 /**
  * Email needs a host to connect to and an address to send from. Credentials

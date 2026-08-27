@@ -2,6 +2,7 @@ import { ExamStatus, StudentStatus } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { type Band, aggregate, gradeFor, rank } from './grading.js';
+import { normalizePhone, renderTemplate, toGsm7 } from '../communication/message.service.js';
 
 async function bandsForExam(examId: string, schoolId: string): Promise<Band[]> {
   const exam = await prisma.exam.findFirst({
@@ -324,4 +325,85 @@ export async function transcript(schoolId: string, studentId: string) {
   });
 
   return { student, exams };
+}
+
+/** One parent's notification for one student's results. */
+export interface ResultNotice {
+  studentId: string;
+  studentName: string;
+  guardianName: string;
+  phone: string;
+  body: string;
+}
+
+/** The default wording. Schools may override it in their message templates. */
+export const RESULT_TEMPLATE =
+  '{{schoolName}}: {{studentName}} - {{examName}} results. ' +
+  'Average {{average}}%{{position}}. Report card at the school office.';
+
+/**
+ * Builds the parent notifications for a published exam.
+ *
+ * One message per student rather than per guardian: results go to whoever pays
+ * the fees, falling back to the primary contact, so a child with three
+ * guardians costs one message rather than three.
+ *
+ * A student with no reachable guardian is simply left out — the caller reports
+ * the count so the office can see who was missed and telephone them.
+ */
+export async function buildResultNotices(
+  schoolId: string,
+  examId: string,
+  template = RESULT_TEMPLATE,
+): Promise<{ notices: ResultNotice[]; withoutContact: string[] }> {
+  const sheet = await buildResultSheet(schoolId, examId);
+
+  const links = await prisma.studentGuardian.findMany({
+    where: { student: { schoolId }, studentId: { in: sheet.data.map((r) => r.studentId) } },
+    include: { guardian: { select: { firstName: true, lastName: true, phone: true } } },
+  });
+
+  const contactFor = new Map<string, (typeof links)[number]>();
+  for (const link of links) {
+    const held = contactFor.get(link.studentId);
+    // Fee payer wins, then the primary contact, then whoever is listed.
+    const better =
+      !held ||
+      (link.isFeePayer && !held.isFeePayer) ||
+      (link.isPrimary && !held.isFeePayer && !held.isPrimary);
+    if (better && link.guardian.phone) contactFor.set(link.studentId, link);
+  }
+
+  const notices: ResultNotice[] = [];
+  const withoutContact: string[] = [];
+
+  for (const row of sheet.data) {
+    const link = contactFor.get(row.studentId);
+    if (!link) {
+      withoutContact.push(row.name);
+      continue;
+    }
+
+    const body = toGsm7(renderTemplate(template, {
+      schoolName: sheet.school.name,
+      studentName: row.name,
+      examName: sheet.exam.name,
+      average: row.average.toFixed(1),
+      // Ranking is optional per school, so the phrase disappears when it is off.
+      position:
+        row.position !== null ? `, position ${row.position} of ${sheet.summary.studentCount}` : '',
+      className: row.className ?? '',
+      term: sheet.exam.term ?? '',
+    }));
+
+    notices.push({
+      studentId: row.studentId,
+      studentName: row.name,
+      guardianName: `${link.guardian.firstName} ${link.guardian.lastName}`,
+      phone: normalizePhone(link.guardian.phone),
+      body,
+    });
+  }
+
+  return { notices, withoutContact };
 }

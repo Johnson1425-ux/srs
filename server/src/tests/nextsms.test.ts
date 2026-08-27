@@ -1,0 +1,247 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { NextSmsProvider } from '../modules/communication/providers/nextsms.js';
+
+/**
+ * NextSMS (messaging-service.co.tz): Basic auth, a JSON body, and one entry per
+ * recipient in `messages` whose `status.groupName` says what happened.
+ */
+describe('NextSMS request and response handling', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const ok = (body: unknown) =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    } as unknown as Response);
+
+  const accepted = (numbers: string[]) => ({
+    messages: numbers.map((to, i) => ({
+      to,
+      status: { groupId: 1, groupName: 'PENDING', id: 26, name: 'MESSAGE_ACCEPTED' },
+      messageId: `msg-${i}`,
+      smsCount: 1,
+    })),
+  });
+
+  const provider = () => new NextSmsProvider('school', 'secret', false, 'https://gw.test/api/sms/v1');
+
+  it('authenticates with Basic credentials and posts JSON', async () => {
+    fetchMock.mockReturnValue(ok(accepted(['255754000001'])));
+
+    await provider().send([{ recipient: '+255754000001', body: 'Results are out.' }], 'SHULE');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://gw.test/api/sms/v1/text/single');
+    expect(init.headers.Authorization).toBe(
+      `Basic ${Buffer.from('school:secret').toString('base64')}`,
+    );
+    expect(init.headers['Content-Type']).toBe('application/json');
+
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({ from: 'SHULE', text: 'Results are out.' });
+  });
+
+  it('strips the plus, because the gateway wants bare digits', async () => {
+    fetchMock.mockReturnValue(ok(accepted(['255754000001', '255754000002'])));
+
+    await provider().send(
+      [
+        { recipient: '+255754000001', body: 'x' },
+        { recipient: '+255754000002', body: 'x' },
+      ],
+      'SHULE',
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.to).toEqual(['255754000001', '255754000002']);
+  });
+
+  it('uses the test path, which does not send or bill', async () => {
+    fetchMock.mockReturnValue(ok(accepted(['255754000001'])));
+
+    await new NextSmsProvider('u', 'p', true, 'https://gw.test/api/sms/v1').send(
+      [{ recipient: '+255754000001', body: 'x' }],
+      'SHULE',
+    );
+
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://gw.test/api/sms/v1/test/text/single');
+  });
+
+  it('sends one identical announcement as a single request to many numbers', async () => {
+    fetchMock.mockReturnValue(ok(accepted(['255754000001', '255754000002'])));
+
+    await provider().send(
+      [
+        { recipient: '+255754000001', body: 'Parents meeting on Saturday.' },
+        { recipient: '+255754000002', body: 'Parents meeting on Saturday.' },
+      ],
+      'SHULE',
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://gw.test/api/sms/v1/text/single');
+  });
+
+  it('sends personalised messages in one multi request, not one each', async () => {
+    fetchMock.mockReturnValue(
+      ok({
+        messages: ['255754000001', '255754000002', '255754000003'].map((to, i) => ({
+          to,
+          status: { groupName: 'PENDING', name: 'MESSAGE_ACCEPTED' },
+          messageId: `m${i}`,
+          smsCount: 1,
+        })),
+      }),
+    );
+
+    // A result notice per child: every body differs, which would otherwise be
+    // one HTTP request per parent.
+    const results = await provider().send(
+      [
+        { recipient: '+255754000001', body: 'Asha scored 72%' },
+        { recipient: '+255754000002', body: 'Juma scored 65%' },
+        { recipient: '+255754000003', body: 'Neema scored 81%' },
+      ],
+      'SHULE',
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://gw.test/api/sms/v1/text/multi');
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.messages).toHaveLength(3);
+    expect(body.messages[0]).toMatchObject({
+      from: 'SHULE',
+      to: '255754000001',
+      text: 'Asha scored 72%',
+    });
+    expect(results.every((r) => r.accepted)).toBe(true);
+  });
+
+  it('accepts a pending message and records its id and segment count', async () => {
+    fetchMock.mockReturnValue(
+      ok({
+        messages: [
+          {
+            to: '255754000001',
+            status: { groupName: 'PENDING', name: 'MESSAGE_ACCEPTED' },
+            messageId: 'abc123',
+            smsCount: 2,
+          },
+        ],
+      }),
+    );
+
+    const [result] = await provider().send(
+      [{ recipient: '+255754000001', body: 'x' }],
+      'SHULE',
+    );
+
+    expect(result).toMatchObject({ accepted: true, providerRef: 'abc123', cost: '2 SMS' });
+  });
+
+  it('does not retry a rejected number, but does retry an empty balance', async () => {
+    fetchMock.mockReturnValue(
+      ok({
+        messages: [
+          {
+            to: '255754000001',
+            status: {
+              groupName: 'REJECTED',
+              name: 'REJECTED_INVALID_DESTINATION',
+              description: 'Invalid destination address',
+            },
+          },
+          {
+            to: '255754000002',
+            status: {
+              groupName: 'REJECTED',
+              name: 'REJECTED_NOT_ENOUGH_CREDIT',
+              description: 'Not enough credit',
+            },
+          },
+        ],
+      }),
+    );
+
+    const results = await provider().send(
+      [
+        { recipient: '+255754000001', body: 'x' },
+        { recipient: '+255754000002', body: 'x' },
+      ],
+      'SHULE',
+    );
+
+    expect(results[0]).toMatchObject({ accepted: false, retryable: false });
+    expect(results[0]!.error).toContain('Invalid destination');
+    // Topping up fixes this one, so it must survive to be retried.
+    expect(results[1]).toMatchObject({ accepted: false, retryable: true });
+  });
+
+  it('treats bad credentials as permanent and a timeout as retryable', async () => {
+    fetchMock.mockReturnValue(
+      Promise.resolve({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve('Unauthorized'),
+        json: () => Promise.resolve({}),
+      } as unknown as Response),
+    );
+    const unauthorised = await provider().send(
+      [{ recipient: '+255754000001', body: 'x' }],
+      'SHULE',
+    );
+    expect(unauthorised[0]).toMatchObject({ accepted: false, retryable: false });
+
+    fetchMock.mockReset();
+    fetchMock.mockRejectedValue(new Error('The operation timed out'));
+    const timedOut = await provider().send([{ recipient: '+255754000001', body: 'x' }], 'SHULE');
+    expect(timedOut[0]).toMatchObject({ accepted: false, retryable: true });
+  });
+
+  it('does not retry a rejected sender ID reported for the whole request', async () => {
+    fetchMock.mockReturnValue(ok({ messages: [], error: 'Invalid sender id' }));
+
+    const [result] = await provider().send(
+      [{ recipient: '+255754000001', body: 'x' }],
+      'BADSENDER',
+    );
+
+    expect(result).toMatchObject({ accepted: false, retryable: false });
+  });
+
+  it('never throws when the gateway returns nonsense', async () => {
+    fetchMock.mockReturnValue(
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new Error('not json')),
+        text: () => Promise.resolve('<html>'),
+      } as unknown as Response),
+    );
+
+    const results = await provider().send([{ recipient: '+255754000001', body: 'x' }], 'SHULE');
+    expect(results).toHaveLength(1);
+    expect(results[0]!.accepted).toBe(false);
+  });
+
+  it('omits the sender ID when blank, so the account default applies', async () => {
+    fetchMock.mockReturnValue(ok(accepted(['255754000001'])));
+
+    await provider().send([{ recipient: '+255754000001', body: 'x' }], '  ');
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.from).toBeUndefined();
+  });
+});

@@ -253,7 +253,7 @@ REST, JSON, versioned under `/api/v1`, grouped by resource per PRD section 9.
 | `/staff` | list, create, update, `attendance`, `attendance/register`, `leave/requests` |
 | `/academics` | `years`, `terms`, `classes`, `streams`, `subjects`, `departments`, `grade-scales`, `timetable`, `assignments` |
 | `/attendance` | `register`, record, `student/:id`, `exceptions`, `summary` |
-| `/exams` | list, create, `subjects/:id/marks`, `publish`, `unpublish` |
+| `/exams` | list, create, `subjects/:id/marks`, `publish`, `unpublish`, `notify-preview` |
 | `/results` | `exam/:id`, `exam/:id/report-card/:studentId`, `transcript/:studentId` |
 | `/fees` | `structures`, `generate-invoices`, `adjustments`, `outstanding`, `students/:id/balance` |
 | `/invoices` | list, get, `cancel` |
@@ -554,7 +554,23 @@ would break every deployment that forgot to edit it.
 4. Schedule `pg_dump` for the daily backups the PRD requires.
 5. The API is stateless, so it scales horizontally behind the proxy.
 
-### SMS via Africa's Talking
+### SMS
+
+Two gateways are supported. Pick one with `SMS_PROVIDER`; the rest of the system
+does not care which is in use.
+
+| | Africa's Talking | NextSMS |
+| --- | --- | --- |
+| Credentials | username + API key | dashboard username + password |
+| Reach | pan-African | Tanzania |
+| Dry run | `AFRICASTALKING_SANDBOX=true` (separate account) | `NEXTSMS_TEST_MODE=true` (same account) |
+| Personalised batch | one request per recipient | one request for the whole batch |
+
+That last row matters when results are published: NextSMS's `text/multi`
+endpoint carries a different body per parent in a single call, so notifying four
+hundred families is one HTTP request rather than four hundred.
+
+#### Africa's Talking
 
 ```
 SMS_PROVIDER=africastalking
@@ -574,10 +590,39 @@ treated as off rather than failing at the first send.
 `SMS_SENDER_ID`. A live alphanumeric sender ID has to be registered with Africa's
 Talking first; leave it blank to fall back to the account default.
 
+`AFRICASTALKING_BASE_URL` overrides the endpoint, for an outbound proxy or a
+stub during testing.
+
 > **The sandbox rejects sender IDs entirely.** With `AFRICASTALKING_SANDBOX=true`,
 > set `SMS_SENDER_ID=` and clear the school's own sender ID under Settings, or
 > every send fails with `InvalidSenderId`. The Message log warns about this
 > before you send.
+
+#### NextSMS
+
+```
+SMS_PROVIDER=nextsms
+NEXTSMS_USERNAME=your-dashboard-username
+NEXTSMS_PASSWORD=your-dashboard-password
+NEXTSMS_TEST_MODE=false                   # true validates without sending
+SMS_SENDER_ID=SCHOOL                      # must be registered with NextSMS
+SMS_MAX_ATTEMPTS=3
+```
+
+The same username and password you sign in to messaging-service.co.tz with; both
+must be present or the provider counts as unconfigured. Numbers are converted to
+the bare digits the gateway expects (`255754123456`), so schools can keep storing
+them however they like.
+
+**Test mode** points every request at NextSMS's `/test` path, which checks the
+credentials, sender ID and numbers and replies exactly as a real send would —
+without delivering anything or spending credit. Unlike Africa's Talking's sandbox
+it uses your live account, so a dry run tells you whether your real sender ID
+works. Turn it off before going live or nothing reaches a parent.
+
+`NEXTSMS_BASE_URL` overrides the endpoint, for an outbound proxy or a stub.
+
+#### Both gateways
 
 **How sending works.** Queueing a message nudges a dispatcher that runs outside
 the request, so a bulk send to several hundred parents does not hold the HTTP
@@ -593,13 +638,18 @@ routing error or empty balance is requeued until `SMS_MAX_ATTEMPTS` is reached.
 After fixing whatever caused a batch to fail, **Retry failed** on the Message log
 puts them back in the queue.
 
-Recipients sharing an identical body are sent in one request, so a school-wide
-announcement is a single call while personalised reminders are necessarily one
-each. Delivery status, the gateway's message id and its reported cost are stored
-per message.
+**Batching.** Recipients sharing an identical body are always sent in one
+request, so a school-wide announcement is a single call on either gateway. Where
+every body differs — a result notice naming each child — Africa's Talking needs
+one request per parent, while NextSMS carries the whole batch in one. Delivery
+status, the gateway's message id and its reported cost are stored per message.
 
-`AFRICASTALKING_BASE_URL` overrides the endpoint, for an outbound proxy or a
-stub during testing.
+**Cost.** SMS is billed per 160-character segment, but a single character outside
+the GSM 03.38 alphabet forces the whole message into UCS-2, where a segment holds
+only 70 — so one em dash or curly quote can double the bill. Outbound SMS bodies
+are folded to the plain equivalents (`—` to `-`, `"` to `"`, `…` to `...`) before
+they are stored and sent. What a send will actually be billed as is shown before
+you confirm it.
 
 ### Email over SMTP
 
@@ -643,6 +693,41 @@ Connections are pooled, so a bulk send opens a handful rather than one per
 parent. Messages go out one at a time: mail servers rate-limit a burst from a
 single client more readily than a steady stream.
 
+### Texting results to parents
+
+Publishing an exam can text every family their own child's summary, which is
+what most parents will actually read — expecting them to find the portal, recover
+a password and navigate to a report card is expecting too much of a channel that
+competes with a message arriving on the phone by itself.
+
+```
+Mlimani Secondary School: Amina Mushi - Term 1 Examination results.
+Average 57.9%, position 22 of 36. Report card at the school office.
+```
+
+**One parent per child, not all of them.** Guardians are ranked fee payer >
+primary contact > anyone with a phone number, and only the first is texted.
+Texting three guardians for one child triples the bill for the same information.
+Siblings still get one message each, because each names a different child.
+
+**Nothing is sent without confirmation.** `POST /exams/:id/publish` only notifies
+when passed `{ "notifyGuardians": true }`, and the Examinations page asks first,
+showing:
+
+- how many parents would be texted,
+- **how many segments that is billed as** — not the same number, since a long
+  school name or exam title pushes a message past 160 characters into two,
+- the exact message a parent will receive,
+- which students have no reachable guardian, so the office can chase the numbers,
+- a warning if no gateway is configured, in which case the messages sit in the
+  outbox as `QUEUED` and nothing is sent.
+
+`GET /exams/:id/notify-preview` returns the same figures without publishing.
+
+Results are still published to the portal either way; the texts are additional.
+If a batch looks expensive, shortening the exam name is usually the fix — it
+appears in every message.
+
 ---
 
 ## PRD coverage
@@ -657,14 +742,14 @@ single client more readily than a steady stream.
 | 6 | Staff Management | Teaching and non-teaching, departments, employment records, attendance, leave, salary |
 | 7 | Academic Management | Classes, subjects, timetable with clash detection, assignments, homework, promotion |
 | 8 | Attendance | Daily student, staff, reports, late arrivals, absentees, guardian SMS |
-| 9 | Examinations | All five exam types, marks entry, grading, GPA, configurable ranking, report cards, transcripts |
+| 9 | Examinations | All five exam types, marks entry, grading, GPA, configurable ranking, report cards, transcripts, results texted to guardians on publication |
 | 10 | Fee Management | All nine categories, structures, invoices, receipts, discounts, scholarships, waivers, history, balances, reversals; all five payment methods incl. the four mobile-money providers |
 | 11 | Accounting | Income, expenses, payroll with PAYE/NSSF, general ledger, P&L, cash flow |
 | 12 | Library | Books, categories, borrowing, returns, late fees, barcode field, inventory |
 | 13 | Inventory | Assets, stationery, lab equipment, furniture, stock movements, suppliers, purchase orders |
 | 14 | Transport | Buses, routes, drivers, fuel logs, maintenance, student allocation, manifests |
 | 15 | Hostel | Rooms, beds, occupancy, boarders, allocation with gender and capacity rules |
-| 16 | Communication | Email/SMS/in-app channels, announcements, templates with placeholders, bulk messaging by audience |
+| 16 | Communication | Email/SMS/in-app channels via Africa's Talking, NextSMS or SMTP; announcements, templates with placeholders, bulk messaging by audience, retries and per-message delivery status |
 | 17 | Reports | All listed reports with CSV/Excel export; PDF via the print-optimised receipt and report-card views |
 | 18 | Document Management | Metadata registry for all listed document types, plus storage-quota tracking |
 | 19 | Parent Portal | Attendance, results, homework, timetable, fees, announcements |

@@ -18,6 +18,18 @@ import {
 } from '../components/ui';
 import type { AcademicYear, Exam, SchoolClass, Subject } from '../lib/types';
 
+interface NotifyPreview {
+  recipients: number;
+  withoutContact: string[];
+  sample: string | null;
+  segments: number;
+  configured: boolean;
+}
+
+interface PublishResult {
+  notified: { queued: number; withoutContact: string[] } | null;
+}
+
 const EXAM_TYPES = ['MIDTERM', 'TERMINAL', 'ANNUAL', 'MOCK', 'CONTINUOUS_ASSESSMENT'] as const;
 
 interface ExamForm {
@@ -76,10 +88,43 @@ export function ExamsPage() {
     },
   });
 
+  const [publishing, setPublishing] = useState<{ id: string; name: string } | null>(null);
+  const [notifyGuardians, setNotifyGuardians] = useState(true);
+  const [notice, setNotice] = useState<string | null>(null);
+
   const publish = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'publish' | 'unpublish' }) =>
-      post(`/exams/${id}/${action}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['exams'] }),
+    mutationFn: ({
+      id,
+      action,
+      notifyGuardians,
+    }: {
+      id: string;
+      action: 'publish' | 'unpublish';
+      notifyGuardians?: boolean;
+    }) => post<PublishResult>(`/exams/${id}/${action}`, { notifyGuardians }),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['exams'] });
+      setPublishing(null);
+      if (result?.notified) {
+        const missed = result.notified.withoutContact.length;
+        setNotice(
+          `Results published. ${result.notified.queued} parent(s) notified by SMS` +
+            (missed ? ` · ${missed} student(s) have no telephone number on file.` : '.'),
+        );
+      } else {
+        setNotice('Results published. Parents were not notified.');
+      }
+    },
+  });
+
+  /**
+   * What the notification would cost, fetched only once the dialog is open —
+   * it walks the whole result sheet, so it is not worth doing for every row.
+   */
+  const preview = useQuery({
+    queryKey: ['exam-notify-preview', publishing?.id],
+    queryFn: () => get<NotifyPreview>(`/exams/${publishing!.id}/notify-preview`),
+    enabled: Boolean(publishing),
   });
 
   return (
@@ -95,6 +140,17 @@ export function ExamsPage() {
           )
         }
       />
+
+      {notice && (
+        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <div className="flex items-start justify-between gap-4">
+            <span>{notice}</span>
+            <button type="button" className="text-emerald-700" onClick={() => setNotice(null)}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {publish.error != null && (
         <div className="mb-4">
@@ -137,10 +193,9 @@ export function ExamsPage() {
                       className={exam.status === 'PUBLISHED' ? 'btn-secondary' : 'btn-primary'}
                       disabled={publish.isPending}
                       onClick={() =>
-                        publish.mutate({
-                          id: exam.id,
-                          action: exam.status === 'PUBLISHED' ? 'unpublish' : 'publish',
-                        })
+                        exam.status === 'PUBLISHED'
+                          ? publish.mutate({ id: exam.id, action: 'unpublish' })
+                          : setPublishing({ id: exam.id, name: exam.name })
                       }
                     >
                       {exam.status === 'PUBLISHED' ? 'Unpublish' : 'Publish results'}
@@ -190,6 +245,100 @@ export function ExamsPage() {
             </Card>
           ))}
         </div>
+      )}
+
+      {publishing && (
+        <Modal title={`Publish ${publishing.name}`} onClose={() => setPublishing(null)}>
+          <div className="space-y-4">
+            {publish.error != null && <ErrorNote error={publish.error} />}
+
+            <p className="text-sm text-slate-600">
+              Publishing makes these results visible to parents and students in their portal.
+              Nothing is sent to anybody unless you ask for it below.
+            </p>
+
+            {preview.isLoading ? (
+              <Spinner label="Working out who would be told…" />
+            ) : preview.error != null ? (
+              <ErrorNote error={preview.error} />
+            ) : preview.data ? (
+              <>
+                <label className="flex items-start gap-3 rounded-lg border border-slate-200 p-4">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={notifyGuardians && preview.data.recipients > 0}
+                    disabled={preview.data.recipients === 0}
+                    onChange={(e) => setNotifyGuardians(e.target.checked)}
+                  />
+                  <span className="text-sm">
+                    <span className="font-medium text-slate-800">
+                      Send an SMS to {preview.data.recipients} parent(s)
+                    </span>
+                    <span className="mt-1 block text-xs text-slate-500">
+                      {preview.data.segments} message segment(s) will be billed. One message per
+                      student, to whoever pays the fees.
+                    </span>
+                  </span>
+                </label>
+
+                {preview.data.sample && (
+                  <div>
+                    <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+                      What a parent will receive
+                    </p>
+                    <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                      {preview.data.sample}
+                    </p>
+                  </div>
+                )}
+
+                {!preview.data.configured && (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                    No SMS gateway is configured, so messages will be recorded in the outbox and
+                    sent once one is set up.
+                  </p>
+                )}
+
+                {preview.data.withoutContact.length > 0 && (
+                  <details className="rounded-lg border border-slate-200 px-4 py-3 text-sm">
+                    <summary className="cursor-pointer text-slate-700">
+                      {preview.data.withoutContact.length} student(s) have no telephone number on
+                      file
+                    </summary>
+                    <p className="mt-2 text-xs text-slate-500">
+                      {preview.data.withoutContact.join(', ')}
+                    </p>
+                    <p className="mt-2 text-xs text-slate-500">
+                      These families will have to be told another way. Adding a guardian telephone
+                      number now means they are included next time.
+                    </p>
+                  </details>
+                )}
+              </>
+            ) : null}
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button type="button" className="btn-secondary" onClick={() => setPublishing(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={publish.isPending}
+                onClick={() =>
+                  publish.mutate({
+                    id: publishing.id,
+                    action: 'publish',
+                    notifyGuardians: notifyGuardians && (preview.data?.recipients ?? 0) > 0,
+                  })
+                }
+              >
+                {publish.isPending ? 'Publishing…' : 'Publish results'}
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {showForm && (

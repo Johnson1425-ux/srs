@@ -325,6 +325,105 @@ describe('examinations', () => {
     expect(res.body.summary.rankingEnabled).toBe(true);
   });
 
+  it('reports nobody reachable when no guardian has a telephone number', async () => {
+    const res = await request(app)
+      .get(`/api/v1/exams/${examId}/notify-preview`)
+      .set(authed(adminToken));
+
+    expect(res.status).toBe(200);
+    expect(res.body.recipients).toBe(0);
+    // Every student is named, so the office knows who to telephone instead.
+    expect(res.body.withoutContact.length).toBe(fixture.students.length);
+    expect(res.body.sample).toBeNull();
+  });
+
+  it('publishes without telling anyone unless asked to', async () => {
+    const before = await prisma.message.count({ where: { schoolId: fixture.school.id } });
+
+    const res = await request(app)
+      .post(`/api/v1/exams/${examId}/publish`)
+      .set(authed(adminToken))
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.notified).toBeNull();
+    expect(await prisma.message.count({ where: { schoolId: fixture.school.id } })).toBe(before);
+  });
+
+  it('queues one result message per student, to whoever pays the fees', async () => {
+    // Two guardians on one student: the fee payer must be the one told, so the
+    // school is not billed twice for the same child.
+    const student = fixture.students[0]!;
+    const [payer, other] = await Promise.all([
+      prisma.guardian.create({
+        data: {
+          schoolId: fixture.school.id,
+          firstName: 'Fee',
+          lastName: 'Payer',
+          phone: '0754111222',
+          relationship: 'FATHER',
+        },
+      }),
+      prisma.guardian.create({
+        data: {
+          schoolId: fixture.school.id,
+          firstName: 'Other',
+          lastName: 'Guardian',
+          phone: '0754333444',
+          relationship: 'MOTHER',
+        },
+      }),
+    ]);
+    await prisma.studentGuardian.createMany({
+      data: [
+        { studentId: student.id, guardianId: payer.id, isFeePayer: true },
+        { studentId: student.id, guardianId: other.id, isPrimary: true },
+      ],
+    });
+
+    await prisma.message.deleteMany({ where: { schoolId: fixture.school.id } });
+
+    const res = await request(app)
+      .post(`/api/v1/exams/${examId}/publish`)
+      .set(authed(adminToken))
+      .send({ notifyGuardians: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.notified.queued).toBe(1);
+
+    const messages = await prisma.message.findMany({
+      where: { schoolId: fixture.school.id, channel: 'SMS' },
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.recipient).toBe('+255754111222');
+    const named = await prisma.student.findUniqueOrThrow({ where: { id: student.id } });
+    expect(messages[0]!.body).toContain(named.firstName);
+    expect(messages[0]!.body).toContain('Average');
+
+    // The students with no guardian on file are reported, not silently dropped.
+    expect(res.body.notified.withoutContact.length).toBeGreaterThan(0);
+  });
+
+  it('counts the reachable parents once they have telephone numbers', async () => {
+    const res = await request(app)
+      .get(`/api/v1/exams/${examId}/notify-preview`)
+      .set(authed(adminToken));
+
+    expect(res.status).toBe(200);
+    expect(res.body.recipients).toBe(1);
+    // Billed per 160-character segment, so this is what the school pays for.
+    expect(res.body.segments).toBeGreaterThanOrEqual(1);
+    expect(res.body.sample).toMatch(/Average \d/);
+  });
+
+  it('keeps result notifications away from a teacher', async () => {
+    const res = await request(app)
+      .get(`/api/v1/exams/${examId}/notify-preview`)
+      .set(authed(teacherToken));
+
+    expect(res.status).toBe(403);
+  });
+
   it('refuses to publish an exam with no marks', async () => {
     const empty = await request(app)
       .post('/api/v1/exams')
