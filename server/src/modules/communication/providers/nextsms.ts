@@ -52,6 +52,28 @@ function chunk<T>(items: T[], size: number): T[][] {
 /** NextSMS wants bare digits: 255754123456, not +255754123456. */
 const toLocalFormat = (recipient: string) => recipient.replace(/\D/g, '');
 
+/**
+ * Builds the Authorization header.
+ *
+ * NextSMS's dashboard hands out a ready-made authorization token, and it is
+ * simply base64 of `username:password` — the same value this would compute from
+ * the two separately. Whichever the school has to hand should work, so a pasted
+ * token is accepted as-is: with its scheme (`Basic abc...`, or `Bearer abc...`
+ * should they ever issue one), or bare, in which case `Basic` is assumed
+ * because that is what the token encodes.
+ */
+export function authorizationHeader(
+  token: string | undefined,
+  username: string,
+  password: string,
+): string {
+  const pasted = token?.trim();
+  if (pasted) {
+    return /^(basic|bearer)\s/i.test(pasted) ? pasted : `Basic ${pasted}`;
+  }
+  return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+}
+
 function describe(status: NextSmsRecipient['status']) {
   const group = (status?.groupName ?? '').toUpperCase();
   const name = (status?.name ?? '').toUpperCase();
@@ -87,6 +109,7 @@ export class NextSmsProvider implements SmsProvider {
     password = env.NEXTSMS_PASSWORD ?? '',
     testMode = env.NEXTSMS_TEST_MODE,
     baseUrl = env.NEXTSMS_BASE_URL ?? DEFAULT_BASE,
+    authToken = env.NEXTSMS_AUTH_TOKEN,
   ) {
     const base = baseUrl.replace(/\/+$/, '');
     // The test path validates the request and reports back without sending
@@ -94,7 +117,7 @@ export class NextSmsProvider implements SmsProvider {
     const prefix = `${base}${testMode ? '/test' : ''}`;
     this.url = `${prefix}/text/single`;
     this.multiUrl = `${prefix}/text/multi`;
-    this.authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+    this.authorization = authorizationHeader(authToken, username, password);
   }
 
   async send(messages: SmsPayload[], senderId: string): Promise<SmsResult[]> {

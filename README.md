@@ -561,7 +561,7 @@ does not care which is in use.
 
 | | Africa's Talking | NextSMS |
 | --- | --- | --- |
-| Credentials | username + API key | dashboard username + password |
+| Credentials | username + API key | dashboard authorization token, or the username + password it encodes |
 | Reach | pan-African | Tanzania |
 | Dry run | `AFRICASTALKING_SANDBOX=true` (separate account) | `NEXTSMS_TEST_MODE=true` (same account) |
 | Personalised batch | one request per recipient | one request for the whole batch |
@@ -602,17 +602,31 @@ stub during testing.
 
 ```
 SMS_PROVIDER=nextsms
-NEXTSMS_USERNAME=your-dashboard-username
-NEXTSMS_PASSWORD=your-dashboard-password
+NEXTSMS_AUTH_TOKEN=your-authorization-token
 NEXTSMS_TEST_MODE=false                   # true validates without sending
 SMS_SENDER_ID=SCHOOL                      # must be registered with NextSMS
 SMS_MAX_ATTEMPTS=3
 ```
 
-The same username and password you sign in to messaging-service.co.tz with; both
-must be present or the provider counts as unconfigured. Numbers are converted to
-the bare digits the gateway expects (`255754123456`), so schools can keep storing
-them however they like.
+**Authentication.** NextSMS's dashboard shows a ready-made authorization token;
+paste it into `NEXTSMS_AUTH_TOKEN` exactly as shown, with or without its
+`Basic ` prefix — a bare token is assumed to be `Basic`, which is what it
+encodes.
+
+That token is base64 of `username:password`, so the same credentials unencoded
+work just as well if that is what you have:
+
+```
+NEXTSMS_USERNAME=your-dashboard-username
+NEXTSMS_PASSWORD=your-dashboard-password
+```
+
+Set one form or the other. If both are present the token wins, on the grounds
+that it is the credential someone deliberately copied. With neither, the
+provider counts as unconfigured and nothing is dispatched.
+
+Numbers are converted to the bare digits the gateway expects
+(`255754123456`), so schools can keep storing them however they like.
 
 **Test mode** points every request at NextSMS's `/test` path, which checks the
 credentials, sender ID and numbers and replies exactly as a real send would —

@@ -63,8 +63,13 @@ const schema = z.object({
   /** Overrides the gateway endpoint — for an outbound proxy, or a stub in testing. */
   AFRICASTALKING_BASE_URL: z.string().url().optional(),
 
-  // NextSMS (messaging-service.co.tz), a Tanzanian gateway. Authenticates with
-  // the same username and password used on their dashboard.
+  // NextSMS (messaging-service.co.tz), a Tanzanian gateway.
+  //
+  // Their dashboard shows a ready-made authorization token, which is what most
+  // people reach for; it can be pasted straight into NEXTSMS_AUTH_TOKEN, with
+  // or without its `Basic ` prefix. The username and password below are the
+  // same credentials in unencoded form and are used only when no token is set.
+  NEXTSMS_AUTH_TOKEN: z.string().optional(),
   NEXTSMS_USERNAME: z.string().optional(),
   NEXTSMS_PASSWORD: z.string().optional(),
   /**
@@ -121,7 +126,8 @@ export const isTest = env.NODE_ENV === 'test';
 export const smsConfigured =
   (env.SMS_PROVIDER === 'africastalking' &&
     Boolean(env.AFRICASTALKING_USERNAME && env.AFRICASTALKING_API_KEY)) ||
-  (env.SMS_PROVIDER === 'nextsms' && Boolean(env.NEXTSMS_USERNAME && env.NEXTSMS_PASSWORD));
+  (env.SMS_PROVIDER === 'nextsms' &&
+    Boolean(env.NEXTSMS_AUTH_TOKEN || (env.NEXTSMS_USERNAME && env.NEXTSMS_PASSWORD)));
 
 /**
  * Email needs a host to connect to and an address to send from. Credentials

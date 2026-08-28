@@ -1,5 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { NextSmsProvider } from '../modules/communication/providers/nextsms.js';
+import {
+  NextSmsProvider,
+  authorizationHeader,
+} from '../modules/communication/providers/nextsms.js';
+
+/**
+ * The dashboard shows a ready-made token, so whichever of the two forms a
+ * school has to hand has to produce the same header.
+ */
+describe('NextSMS authorization', () => {
+  const encoded = Buffer.from('school:secret').toString('base64');
+
+  it('encodes a username and password when no token is given', () => {
+    expect(authorizationHeader(undefined, 'school', 'secret')).toBe(`Basic ${encoded}`);
+  });
+
+  it('takes a token pasted with its scheme exactly as it is', () => {
+    expect(authorizationHeader(`Basic ${encoded}`, '', '')).toBe(`Basic ${encoded}`);
+    expect(authorizationHeader(`Bearer ${encoded}`, '', '')).toBe(`Bearer ${encoded}`);
+  });
+
+  it('assumes Basic for a bare token, which is what the dashboard encodes', () => {
+    expect(authorizationHeader(encoded, '', '')).toBe(`Basic ${encoded}`);
+  });
+
+  it('tolerates the whitespace that comes with a copy and paste', () => {
+    expect(authorizationHeader(`  ${encoded}\n`, '', '')).toBe(`Basic ${encoded}`);
+  });
+
+  it('prefers the token, since it is the credential the school actually copied', () => {
+    expect(authorizationHeader('pasted-token', 'school', 'secret')).toBe('Basic pasted-token');
+  });
+
+  it('falls back to the username and password when the token is blank', () => {
+    expect(authorizationHeader('   ', 'school', 'secret')).toBe(`Basic ${encoded}`);
+  });
+});
 
 /**
  * NextSMS (messaging-service.co.tz): Basic auth, a JSON body, and one entry per
@@ -234,6 +270,17 @@ describe('NextSMS request and response handling', () => {
     const results = await provider().send([{ recipient: '+255754000001', body: 'x' }], 'SHULE');
     expect(results).toHaveLength(1);
     expect(results[0]!.accepted).toBe(false);
+  });
+
+  it('sends with a dashboard token and no username or password', async () => {
+    fetchMock.mockReturnValue(ok(accepted(['255754000001'])));
+
+    await new NextSmsProvider('', '', false, 'https://gw.test/api/sms/v1', 'tok123').send(
+      [{ recipient: '+255754000001', body: 'x' }],
+      'SHULE',
+    );
+
+    expect(fetchMock.mock.calls[0]![1].headers.Authorization).toBe('Basic tok123');
   });
 
   it('omits the sender ID when blank, so the account default applies', async () => {
