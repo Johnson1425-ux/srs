@@ -663,9 +663,14 @@ Reply:      {"message":"Invalid Request"}
 ```
 
 It builds the request exactly as the provider does, so it cannot pass while real
-sends fail. It follows `NEXTSMS_TEST_MODE` unless you pass `--test` or `--live`;
-`--live` spends credit and reaches a real handset. The authorization header is
-abbreviated so the output is safe to paste into a support ticket.
+sends fail. **Nothing is delivered and no credit is spent** unless you add
+`--live`, so it is safe to run against a production account. The authorization
+header is abbreviated, so the output can be pasted into a support ticket as it
+stands.
+
+The first line says which `.env` was read. If that is not the file your server
+uses, the probe is testing the wrong settings — run it from the same place the
+server runs.
 
 #### Both gateways
 

@@ -9,9 +9,11 @@
  *
  *   npm run sms:probe -- 0754123456
  *
- * It defaults to whatever NEXTSMS_TEST_MODE says. Force either way with
- * --test or --live; --live spends real credit and reaches a real handset.
+ * Nothing is delivered and no credit is spent unless --live is passed, so this
+ * is safe to run against a production account while hunting a rejection.
  */
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { env, smsConfigured } from '../config/env.js';
 import { normalizePhone } from '../modules/communication/message.service.js';
 
@@ -25,19 +27,25 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const recipient = args.find((a) => !a.startsWith('--'));
   const live = args.includes('--live');
-  const test = args.includes('--test');
 
   if (!recipient) {
-    console.error('Usage: npm run sms:probe -- 0754123456 [--test|--live]');
+    console.error('Usage: npm run sms:probe -- 0754123456 [--live]');
     process.exitCode = 1;
     return;
   }
 
+  // Settings are read from the .env of the working directory, so running this
+  // from the wrong folder reports "not configured" while the server itself
+  // sends happily. Say which file was read rather than leaving that a mystery.
+  const envFile = resolve(process.cwd(), '.env');
+  console.log(`Settings:   ${existsSync(envFile) ? envFile : `no .env in ${process.cwd()}`}`);
   console.log(`Provider:   ${env.SMS_PROVIDER}`);
+
   if (!smsConfigured) {
     console.error(
       '\nThis provider is not configured, so nothing would be sent.\n' +
-        'Check SMS_PROVIDER and its credentials in the environment this script sees.',
+        'Either the settings above are not the ones your server uses — run this\n' +
+        'from the same folder — or SMS_PROVIDER and its credentials are unset.',
     );
     process.exitCode = 1;
     return;
@@ -49,7 +57,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const testMode = test ? true : live ? false : env.NEXTSMS_TEST_MODE;
+  // Validated but not delivered unless --live is asked for explicitly. A
+  // diagnostic that texts a parent and spends credit every time it runs is one
+  // people hesitate to run, which defeats the point of having it.
+  const testMode = !live;
   const base = (env.NEXTSMS_BASE_URL ?? 'https://messaging-service.co.tz/api/sms/v1').replace(
     /\/+$/,
     '',
