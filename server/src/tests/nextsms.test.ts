@@ -110,6 +110,15 @@ describe('NextSMS request and response handling', () => {
     expect(body).toMatchObject({ from: 'SHULE', text: 'Results are out.' });
   });
 
+  it('sends one destination as a bare string, not an array of one', async () => {
+    fetchMock.mockReturnValue(ok(accepted(['255754000001'])));
+
+    await provider().send([{ recipient: '+255754000001', body: 'x' }], 'SHULE');
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.to).toBe('255754000001');
+  });
+
   it('strips the plus, because the gateway wants bare digits', async () => {
     fetchMock.mockReturnValue(ok(accepted(['255754000001', '255754000002'])));
 

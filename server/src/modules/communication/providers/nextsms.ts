@@ -197,9 +197,17 @@ export class NextSmsProvider implements SmsProvider {
     text: string,
     senderId: string,
   ): Promise<SmsResult[]> {
+    const numbers = recipients.map(toLocalFormat);
     return this.post(
       this.url,
-      { from: senderId.trim() || undefined, to: recipients.map(toLocalFormat), text },
+      {
+        from: senderId.trim() || undefined,
+        // A single destination goes as a bare string, which is the form the
+        // gateway documents; the array is for a shared announcement. Sending
+        // a one-element array instead is what "Invalid Request" objects to.
+        to: numbers.length === 1 ? numbers[0] : numbers,
+        text,
+      },
       recipients,
     );
   }

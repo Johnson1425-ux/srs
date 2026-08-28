@@ -636,6 +636,37 @@ works. Turn it off before going live or nothing reaches a parent.
 
 `NEXTSMS_BASE_URL` overrides the endpoint, for an outbound proxy or a stub.
 
+#### When a send is rejected
+
+A gateway that answers `Invalid Request` says nothing about which part it
+objected to, and the outbox only ever shows you the reply. The probe prints both
+halves of the exchange:
+
+```
+npm run sms:probe --workspace server -- 0754123456       # from a checkout
+docker compose exec api node dist/scripts/sms-probe.js 0754123456   # under Docker
+```
+
+Run it wherever the API itself runs, so it reads the same credentials the real
+sends use — inside the container under Docker, not on the host.
+
+```
+Mode:       test — validated, not delivered, not billed
+URL:        POST https://messaging-service.co.tz/api/sms/v1/test/text/single
+Auth:       Basic bWxp...M= (24 chars)
+Sender ID:  MLIMANI
+Recipient:  0754123456 normalised to 255754123456
+Body sent:  {"from":"MLIMANI","to":"255754123456","text":"Test message ..."}
+
+Status:     500 Internal Server Error
+Reply:      {"message":"Invalid Request"}
+```
+
+It builds the request exactly as the provider does, so it cannot pass while real
+sends fail. It follows `NEXTSMS_TEST_MODE` unless you pass `--test` or `--live`;
+`--live` spends credit and reaches a real handset. The authorization header is
+abbreviated so the output is safe to paste into a support ticket.
+
 #### Both gateways
 
 **How sending works.** Queueing a message nudges a dispatcher that runs outside
