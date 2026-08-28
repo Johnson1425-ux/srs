@@ -2,7 +2,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   NextSmsProvider,
   authorizationHeader,
+  errorText,
 } from '../modules/communication/providers/nextsms.js';
+
+/** What a school reads in the outbox when the gateway turns a send down. */
+describe('NextSMS error text', () => {
+  it('lifts the sentence out of the gateway JSON', () => {
+    expect(errorText('{"message":"Invalid sender id"}')).toBe('Invalid sender id');
+    expect(errorText('{"error":"Insufficient balance"}')).toBe('Insufficient balance');
+  });
+
+  it('keeps anything it does not recognise, rather than hiding it', () => {
+    expect(errorText('<html>502 Bad Gateway</html>')).toBe('<html>502 Bad Gateway</html>');
+    expect(errorText('{"code":42}')).toBe('{"code":42}');
+  });
+
+  it('says so when there is no body at all', () => {
+    expect(errorText('   ')).toBe('no response body');
+  });
+
+  it('caps a runaway body so one failure cannot fill the outbox', () => {
+    expect(errorText(JSON.stringify({ message: 'x'.repeat(500) })).length).toBe(200);
+  });
+});
 
 /**
  * The dashboard shows a ready-made token, so whichever of the two forms a

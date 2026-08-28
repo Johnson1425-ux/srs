@@ -1,11 +1,19 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import request from 'supertest';
 import { MessageChannel, MessageStatus } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { dispatchQueuedSms, setSmsProvider } from '../modules/communication/dispatcher.js';
 import { AfricasTalkingProvider } from '../modules/communication/providers/africastalking.js';
 import type { SmsPayload, SmsProvider, SmsResult } from '../modules/communication/providers/types.js';
 import { normalizePhone } from '../modules/communication/message.service.js';
-import { type Fixture, createSchoolFixture, destroyFixture } from './fixtures.js';
+import {
+  type Fixture,
+  app,
+  authed,
+  createSchoolFixture,
+  destroyFixture,
+  login,
+} from './fixtures.js';
 
 /** Records what it was asked to send and returns whatever it was told to. */
 function stubProvider(reply: (m: SmsPayload) => Omit<SmsResult, 'recipient'>): SmsProvider & {
@@ -353,6 +361,97 @@ describe("Africa's Talking request and response handling", () => {
     );
     expect(results).toHaveLength(1);
     expect(results[0]!.accepted).toBe(false);
+  });
+});
+
+/**
+ * The dispatcher was well covered but only ever called directly, so a broken
+ * request schema on the routes in front of it went unnoticed: every "Send
+ * queued now" answered 400. These drive the HTTP layer instead.
+ */
+describe('dispatch and retry endpoints', () => {
+  let fixture: Fixture;
+  let token: string;
+
+  beforeAll(async () => {
+    fixture = await createSchoolFixture();
+    token = await login(fixture.users.admin!.email);
+  });
+
+  afterAll(async () => {
+    await destroyFixture(fixture);
+    await prisma.$disconnect();
+  });
+
+  afterEach(async () => {
+    await prisma.message.deleteMany({ where: { schoolId: fixture.school.id } });
+    setSmsProvider(null);
+  });
+
+  const dispatch = (body?: unknown) => {
+    const req = request(app).post('/api/v1/notifications/messages/dispatch').set(authed(token));
+    return body === undefined ? req : req.send(body as object);
+  };
+
+  it('sends the queue when asked for one channel', async () => {
+    setSmsProvider(stubProvider(() => ({ accepted: true, providerRef: 'ref-1' })));
+    await queue(fixture.school.id, ['+255754000001']);
+
+    const res = await dispatch({ channel: 'SMS' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.sms).toMatchObject({ attempted: 1, sent: 1 });
+    // Asking for SMS must not touch the other transport.
+    expect(res.body.email).toBeNull();
+  });
+
+  it('sends both transports when no channel is named', async () => {
+    setSmsProvider(stubProvider(() => ({ accepted: true })));
+    await queue(fixture.school.id, ['+255754000002']);
+
+    const res = await dispatch({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.sms).not.toBeNull();
+    expect(res.body.email).not.toBeNull();
+  });
+
+  it('treats no body at all as both transports', async () => {
+    setSmsProvider(stubProvider(() => ({ accepted: true })));
+
+    const res = await dispatch();
+
+    expect(res.status).toBe(200);
+    expect(res.body.sms).not.toBeNull();
+  });
+
+  it('rejects a channel that is not a transport', async () => {
+    const res = await dispatch({ channel: 'CARRIER_PIGEON' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.details[0].field).toBe('channel');
+  });
+
+  it('requeues failed messages and sends them again', async () => {
+    await queue(fixture.school.id, ['+255754000003']);
+    await prisma.message.updateMany({
+      where: { schoolId: fixture.school.id },
+      data: { status: MessageStatus.FAILED, attempts: 3, error: 'Out of credit' },
+    });
+
+    setSmsProvider(stubProvider(() => ({ accepted: true, providerRef: 'ref-2' })));
+    const res = await request(app)
+      .post('/api/v1/notifications/messages/retry-failed')
+      .set(authed(token))
+      .send({ channel: 'SMS' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.requeued).toBe(1);
+
+    const [message] = await statusOf(fixture.school.id);
+    expect(message).toMatchObject({ status: MessageStatus.SENT, providerRef: 'ref-2' });
+    // The old failure must not linger next to a successful send.
+    expect(message!.error).toBeNull();
   });
 });
 

@@ -283,12 +283,16 @@ communicationRouter.get(
   }),
 );
 
-/** Which transports a request applies to. Absent means both. */
-const channelSchema = z.object({
-  body: z.object({
+/**
+ * Which transports a request applies to. Absent means both — and an absent
+ * body means the same thing, so calling these endpoints with nothing at all is
+ * a valid "send everything".
+ */
+const channelSchema = z
+  .object({
     channel: z.enum([MessageChannel.SMS, MessageChannel.EMAIL]).optional(),
-  }),
-});
+  })
+  .default({});
 
 const countsFor = async (schoolId: string, channel: MessageChannel) => {
   const rows = await prisma.message.groupBy({

@@ -450,10 +450,10 @@ export function CommunicationPage() {
                         <td>
                           <Badge status={m.status} />
                           {m.error && (
-                            <span
-                              className="block max-w-[16rem] truncate text-xs text-red-600"
-                              title={m.error}
-                            >
+                            // Wrapped rather than truncated: a gateway's
+                            // rejection is the one thing here worth reading in
+                            // full, and a hover tooltip is no use on a phone.
+                            <span className="block max-w-[20rem] whitespace-pre-wrap break-words text-xs text-red-600">
                               {m.error}
                             </span>
                           )}

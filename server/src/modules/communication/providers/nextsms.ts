@@ -74,6 +74,35 @@ export function authorizationHeader(
   return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 }
 
+/**
+ * Pulls the readable part out of an error response.
+ *
+ * The gateway answers failures with a JSON envelope, and dumping that whole
+ * blob into the outbox leaves a school secretary reading braces and quotes to
+ * find the one sentence that says what went wrong. Anything unrecognised is
+ * passed through as-is rather than hidden.
+ */
+export function errorText(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) return 'no response body';
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed === 'string') return parsed.slice(0, 200);
+    if (parsed && typeof parsed === 'object') {
+      const record = parsed as Record<string, unknown>;
+      for (const key of ['message', 'error', 'description', 'detail']) {
+        const value = record[key];
+        if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 200);
+      }
+    }
+  } catch {
+    // Not JSON — an HTML error page, say. Fall through to the raw text.
+  }
+
+  return trimmed.slice(0, 200);
+}
+
 function describe(status: NextSmsRecipient['status']) {
   const group = (status?.groupName ?? '').toUpperCase();
   const name = (status?.name ?? '').toUpperCase();
@@ -205,7 +234,7 @@ export class NextSmsProvider implements SmsProvider {
       const body = await response.text().catch(() => '');
       // Credentials or a malformed request will fail identically next time.
       const retryable = response.status !== 401 && response.status !== 403 && response.status !== 400;
-      return failAll(`HTTP ${response.status}: ${body.slice(0, 200)}`, retryable);
+      return failAll(`HTTP ${response.status}: ${errorText(body)}`, retryable);
     }
 
     let payload: NextSmsResponse;
