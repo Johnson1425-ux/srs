@@ -264,7 +264,9 @@ examRouter.get(
     const schoolId = schoolIdOf(req);
     const id = req.params.id as string;
 
-    const { notices, withoutContact } = await buildResultNotices(schoolId, id);
+    const { notices, withoutContact } = await buildResultNotices(schoolId, id, undefined, {
+      dryRun: true,
+    });
     const sample = notices[0]?.body ?? null;
 
     res.json({
@@ -275,6 +277,9 @@ examRouter.get(
       // name can quietly push a message into a second one.
       segments: notices.reduce((total, n) => total + smsSegments(n.body), 0),
       configured: smsConfigured,
+      // The sample carries a stand-in address of the real length, so the page
+      // can say that the token in it is not the one a parent will receive.
+      includesLink: sample?.includes('/r/') ?? false,
     });
   }),
 );

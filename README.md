@@ -751,9 +751,33 @@ a password and navigate to a report card is expecting too much of a channel that
 competes with a message arriving on the phone by itself.
 
 ```
-Mlimani Secondary School: Amina Mushi - Term 1 Examination results.
-Average 57.9%, position 22 of 36. Report card at the school office.
+Mlimani Secondary School: Amina Mushi - Term 1 Exam results.
+Average 57.9%, position 22 of 36. Full report: https://your-school.ac.tz/r/9CgCQHWi84i
 ```
+
+**The link needs no password.** It opens one page: that child's marks, grades,
+average and position, on a phone. A parent who has to find the portal, recover a
+password and navigate to a report card mostly will not, and results nobody reads
+may as well not have been published.
+
+The address itself is the credential, so it is treated as one. The token is 11
+random characters — about 64 bits, in an alphabet with no `O`/`0` or `I`/`l`/`1`
+so it survives being read down a telephone. Lookups are rate limited to 20 a
+minute per address, which makes working through the space hopeless. Links expire
+after `RESULT_LINK_TTL_DAYS` (120 by default) and stop working the moment an exam
+is unpublished, so withdrawing results withdraws the links with them. Republishing
+reuses the same address rather than stranding the one already in a parent's
+message thread. The page carries no admission number and nothing else that
+identifies the child elsewhere in the system, and it is served `noindex` and
+`no-store`.
+
+What it cannot do is tell one holder of the phone from another. Anyone with the
+message can read that child's results — which is the trade being made, and the
+publish dialog says so before anything is sent. Views are counted per link, so a
+school can see when one has been passed around.
+
+`PUBLIC_WEB_URL` sets the address the links are built on; it defaults to the
+first `CORS_ORIGIN`, which is already where parents reach the app.
 
 **One parent per child, not all of them.** Guardians are ranked fee payer >
 primary contact > anyone with a phone number, and only the first is texted.
@@ -775,8 +799,21 @@ showing:
 `GET /exams/:id/notify-preview` returns the same figures without publishing.
 
 Results are still published to the portal either way; the texts are additional.
-If a batch looks expensive, shortening the exam name is usually the fix — it
-appears in every message.
+
+**What it costs.** Measured against the demonstration school — 36 parents, one
+Form 1 exam:
+
+| | Segments billed |
+| --- | --- |
+| Exam named "Term 1 Terminal Examination — Form 1" (36 chars) | 72 |
+| The same, renamed "Term 1 Exam" | 37 |
+
+The link adds roughly 40 characters to every message, which is what pushes the
+first row over 160 and into two segments each. But the names cost more than the
+link does: the exam name and the school name appear in every message, and
+shortening the exam name alone halves the bill. The publish dialog shows the
+segment count before anything is sent, so the effect of a rename can be seen
+before it is paid for.
 
 ---
 

@@ -9,6 +9,7 @@ import { guardianRouter } from './modules/guardians/guardian.routes.js';
 import { staffRouter } from './modules/staff/staff.routes.js';
 import { attendanceRouter } from './modules/attendance/attendance.routes.js';
 import { examRouter, resultRouter } from './modules/exams/exam.routes.js';
+import { publicResultRouter } from './modules/exams/public-result.routes.js';
 import { feeRouter, invoiceRouter, paymentRouter } from './modules/fees/fee.routes.js';
 import { accountingRouter } from './modules/accounting/accounting.routes.js';
 import { libraryRouter } from './modules/library/library.routes.js';
@@ -27,6 +28,9 @@ export const apiRouter: Router = Router();
 
 // Public
 apiRouter.use('/auth', authRouter);
+// Results a parent opens from a link in a text message. The token in the URL
+// is the credential, so this is deliberately mounted above `authenticate`.
+apiRouter.use('/public/results', publicResultRouter);
 
 // Everything below requires a valid access token.
 apiRouter.use(authenticate);

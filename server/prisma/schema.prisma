@@ -266,6 +266,7 @@ model School {
   assignments      Assignment[]
   leaveRequests    LeaveRequest[]
   supportTickets   SupportTicket[]
+  resultLinks      ResultLink[]
 
   @@index([status])
 }
@@ -565,6 +566,7 @@ model Student {
   hostelAllocations    HostelAllocation[]
   documents       Document[]
   submissions     AssignmentSubmission[]
+  resultLinks     ResultLink[]
 
   @@unique([schoolId, admissionNumber])
   @@index([schoolId, status])
@@ -847,8 +849,37 @@ model Exam {
 
   examSubjects ExamSubject[]
   results      ExamResult[]
+  resultLinks  ResultLink[]
 
   @@index([schoolId, academicYearId])
+}
+
+// A no-login address for one child's results in one exam, texted to their
+// guardian when the exam is published.
+//
+// The token is the only credential, so it is random rather than derived from
+// anything guessable, and it stops working on two events beyond its own expiry:
+// the exam leaving PUBLISHED, and the student or exam being deleted. Views are
+// counted because a link opened far more often than a family could plausibly
+// account for is the signal that it has been passed around.
+model ResultLink {
+  id           String    @id @default(cuid())
+  schoolId     String
+  school       School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  examId       String
+  exam         Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
+  studentId    String
+  student      Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  token        String    @unique
+  expiresAt    DateTime
+  views        Int       @default(0)
+  lastViewedAt DateTime?
+  createdAt    DateTime  @default(now())
+
+  // One link per child per exam, so republishing reuses it rather than
+  // stranding the address already sitting in a parent's message thread.
+  @@unique([examId, studentId])
+  @@index([schoolId])
 }
 
 model ExamSubject {

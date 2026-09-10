@@ -30,6 +30,7 @@ import { UsersPage } from './pages/UsersPage';
 import { AccountPage } from './pages/AccountPage';
 import { PlatformPage } from './pages/PlatformPage';
 import { PortalPage } from './pages/PortalPage';
+import { PublicResultPage } from './pages/PublicResultPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -80,6 +81,9 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Opened by a parent from a link in a text message: no session, and
+          deliberately outside the application shell. */}
+      <Route path="/r/:token" element={<PublicResultPage />} />
 
       <Route
         element={

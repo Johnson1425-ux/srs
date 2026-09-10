@@ -24,6 +24,7 @@ interface NotifyPreview {
   sample: string | null;
   segments: number;
   configured: boolean;
+  includesLink: boolean;
 }
 
 interface PublishResult {
@@ -290,6 +291,13 @@ export function ExamsPage() {
                     <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                       {preview.data.sample}
                     </p>
+                    {preview.data.includesLink && (
+                      <p className="mt-2 text-xs text-slate-500">
+                        The link opens that child's results without a password, so anyone holding
+                        the phone can read them. Each parent gets their own address — the one above
+                        is a stand-in and will not open anything.
+                      </p>
+                    )}
                   </div>
                 )}
 

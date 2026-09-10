@@ -1,6 +1,19 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
+/**
+ * An optional URL where a blank value means unset.
+ *
+ * `.env.example` carries these keys with nothing after the `=`, and a bare
+ * `z.string().url().optional()` reads that empty string as a value and refuses
+ * it — so copying the example file verbatim would stop the server booting.
+ */
+const optionalUrl = () =>
+  z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().url().optional(),
+  );
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
@@ -37,6 +50,16 @@ const schema = z.object({
     .min(1, 'DIRECT_URL is required — set it to DATABASE_URL when there is no pooler'),
   TEST_DATABASE_URL: z.string().optional(),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  /**
+   * Where the app is reached from outside — the base for the results links
+   * texted to parents. Defaults to the first CORS origin, which is already the
+   * address the browser uses, so a correct deployment needs no extra setting.
+   * Every character here is billed in every message, so a short host is worth
+   * having.
+   */
+  PUBLIC_WEB_URL: optionalUrl(),
+  /** How long a texted results link keeps working. */
+  RESULT_LINK_TTL_DAYS: z.coerce.number().int().min(1).max(730).default(120),
 
   JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be at least 16 characters'),
   JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET must be at least 16 characters'),
@@ -61,7 +84,7 @@ const schema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   /** Overrides the gateway endpoint — for an outbound proxy, or a stub in testing. */
-  AFRICASTALKING_BASE_URL: z.string().url().optional(),
+  AFRICASTALKING_BASE_URL: optionalUrl(),
 
   // NextSMS (messaging-service.co.tz), a Tanzanian gateway.
   //
@@ -80,7 +103,7 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  NEXTSMS_BASE_URL: z.string().url().optional(),
+  NEXTSMS_BASE_URL: optionalUrl(),
 
   // `none` keeps email in the outbox without dispatching, mirroring SMS.
   EMAIL_PROVIDER: z.enum(['none', 'smtp']).default('none'),
@@ -137,6 +160,14 @@ export const smsConfigured =
  */
 export const emailConfigured =
   env.EMAIL_PROVIDER === 'smtp' && Boolean(env.SMTP_HOST && env.SMTP_FROM);
+
+/**
+ * The address parents reach the app on, without a trailing slash. CORS_ORIGIN
+ * may list several; the first is the canonical one.
+ */
+export const publicWebUrl = (
+  env.PUBLIC_WEB_URL ?? env.CORS_ORIGIN.split(',')[0]!.trim()
+).replace(/\/+$/, '');
 
 /** A single school running its own installation — no plans, no platform admin. */
 export const isStandalone = env.DEPLOYMENT_MODE === 'standalone';

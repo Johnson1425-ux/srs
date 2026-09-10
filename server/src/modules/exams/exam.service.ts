@@ -3,6 +3,7 @@ import { prisma } from '../../db/prisma.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { type Band, aggregate, gradeFor, rank } from './grading.js';
 import { normalizePhone, renderTemplate, toGsm7 } from '../communication/message.service.js';
+import { issueResultLinks, sampleResultLinkUrl } from './result-link.service.js';
 
 async function bandsForExam(examId: string, schoolId: string): Promise<Band[]> {
   const exam = await prisma.exam.findFirst({
@@ -336,10 +337,18 @@ export interface ResultNotice {
   body: string;
 }
 
-/** The default wording. Schools may override it in their message templates. */
+/**
+ * The default wording. Schools may override it in their message templates.
+ *
+ * The link replaces the old "report card at the school office" line rather
+ * than being added to it: an SMS is billed per 160 characters, and a message
+ * that grows past that costs twice as much for every parent. `{{resultLink}}`
+ * resolves to a no-login address for that child's results; leave it out of a
+ * custom template and no link is sent.
+ */
 export const RESULT_TEMPLATE =
   '{{schoolName}}: {{studentName}} - {{examName}} results. ' +
-  'Average {{average}}%{{position}}. Report card at the school office.';
+  'Average {{average}}%{{position}}. Full report: {{resultLink}}';
 
 /**
  * Builds the parent notifications for a published exam.
@@ -355,6 +364,12 @@ export async function buildResultNotices(
   schoolId: string,
   examId: string,
   template = RESULT_TEMPLATE,
+  /**
+   * Costing a send rather than making one. Links are stood in for by an
+   * address of identical length, so the segment count is exact while no
+   * credential is minted for a message that may never be sent.
+   */
+  options: { dryRun?: boolean } = {},
 ): Promise<{ notices: ResultNotice[]; withoutContact: string[] }> {
   const sheet = await buildResultSheet(schoolId, examId);
 
@@ -377,6 +392,18 @@ export async function buildResultNotices(
   const notices: ResultNotice[] = [];
   const withoutContact: string[] = [];
 
+  const reachable = sheet.data.filter((row) => contactFor.has(row.studentId));
+
+  // Only mint links for children whose parent will actually be texted, and
+  // only when the template asks for one — a school that has written its own
+  // wording without {{resultLink}} should not be issuing addresses nobody has.
+  const studentIds = reachable.map((row) => row.studentId);
+  const resultLinks = !template.includes('{{resultLink}}')
+    ? new Map<string, string>()
+    : options.dryRun
+      ? new Map(studentIds.map((id) => [id, sampleResultLinkUrl()]))
+      : await issueResultLinks(schoolId, examId, studentIds);
+
   for (const row of sheet.data) {
     const link = contactFor.get(row.studentId);
     if (!link) {
@@ -394,6 +421,7 @@ export async function buildResultNotices(
         row.position !== null ? `, position ${row.position} of ${sheet.summary.studentCount}` : '',
       className: row.className ?? '',
       term: sheet.exam.term ?? '',
+      resultLink: resultLinks.get(row.studentId) ?? '',
     }));
 
     notices.push({
