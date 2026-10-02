@@ -95,7 +95,9 @@ export function DocumentsPage() {
 
   const classes = useQuery({
     queryKey: ['academics', 'classes'],
-    queryFn: () => get<SchoolClass[]>('/academics/classes'),
+    // This endpoint wraps its array in `{ data }`, as the other pages reading
+    // it also assume.
+    queryFn: () => get<{ data: SchoolClass[] }>('/academics/classes'),
     enabled: tab === 'Missing' && can('academics:read'),
   });
 
@@ -333,7 +335,7 @@ export function DocumentsPage() {
                 }}
               >
                 <option value="">All classes</option>
-                {(classes.data ?? []).map((c) => (
+                {(classes.data?.data ?? []).map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
                   </option>
