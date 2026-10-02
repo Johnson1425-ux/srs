@@ -23,6 +23,7 @@ import { userRouter } from './modules/users/user.routes.js';
 import { portalRouter } from './modules/portal/portal.routes.js';
 import { platformRouter } from './modules/platform/platform.routes.js';
 import { documentRouter } from './modules/documents/document.routes.js';
+import { localFileRouter } from './modules/documents/local-file.routes.js';
 
 export const apiRouter: Router = Router();
 
@@ -31,6 +32,12 @@ apiRouter.use('/auth', authRouter);
 // Results a parent opens from a link in a text message. The token in the URL
 // is the credential, so this is deliberately mounted above `authenticate`.
 apiRouter.use('/public/results', publicResultRouter);
+
+// Files held by the local storage driver. The signature in the query string is
+// the credential — one key, with its own expiry — so like the results links
+// above, this sits above `authenticate`: an <img> tag cannot send a header.
+// Under a bucket driver these URLs point at the bucket and never arrive here.
+apiRouter.use('/storage/local', localFileRouter);
 
 // Everything below requires a valid access token.
 apiRouter.use(authenticate);

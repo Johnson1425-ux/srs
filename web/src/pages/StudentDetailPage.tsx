@@ -14,6 +14,8 @@ import {
   Spinner,
   TableWrap,
 } from '../components/ui';
+import { DocumentsCard } from '../components/DocumentsCard';
+import { StudentPhoto } from '../components/StudentPhoto';
 import type { Guardian, Invoice, Paginated, Payment, Student } from '../lib/types';
 
 interface BalanceResponse {
@@ -27,7 +29,7 @@ interface AttendanceResponse {
   summary: { totalDays: number; attendanceRate: number } & Record<string, number>;
 }
 
-const TABS = ['Profile', 'Attendance', 'Fees', 'Results'] as const;
+const TABS = ['Profile', 'Attendance', 'Fees', 'Results', 'Documents'] as const;
 type Tab = (typeof TABS)[number];
 
 export function StudentDetailPage() {
@@ -176,6 +178,13 @@ export function StudentDetailPage() {
       {tab === 'Profile' && (
         <div className="grid gap-6 lg:grid-cols-2">
           <Card title="Student details">
+            <div className="mb-5 border-b border-slate-100 pb-5">
+              <StudentPhoto
+                studentId={s.id}
+                name={fullName(s)}
+                hasPhoto={Boolean(s.photoFileId ?? s.photoUrl)}
+              />
+            </div>
             <dl className="grid grid-cols-2 gap-4 text-sm">
               <Detail label="Admission number" value={s.admissionNumber} />
               <Detail label="Gender" value={titleCase(s.gender)} />
@@ -457,6 +466,8 @@ export function StudentDetailPage() {
           )}
         </div>
       )}
+
+      {tab === 'Documents' && <DocumentsCard subject="student" subjectId={s.id} />}
 
       {linkModal && (
         <Modal title="Link a parent to this student" onClose={closeLinkModal}>
