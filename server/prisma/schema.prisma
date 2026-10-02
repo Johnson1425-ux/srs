@@ -267,6 +267,7 @@ model School {
   leaveRequests    LeaveRequest[]
   supportTickets   SupportTicket[]
   resultLinks      ResultLink[]
+  storedFiles      StoredFile[]
 
   @@index([status])
 }
@@ -539,7 +540,11 @@ model Student {
   dateOfBirth     DateTime
   nationality     String        @default("Tanzanian")
   address         String?
+  /// An externally hosted portrait, from before the app could store one. An
+  /// uploaded photograph lives in `photoFile` and leaves this empty.
   photoUrl        String?
+  photoFileId     String?       @unique
+  photoFile       StoredFile?   @relation(fields: [photoFileId], references: [id], onDelete: SetNull)
   bloodGroup      String?
   medicalConditions String?
   previousSchool  String?
@@ -1420,6 +1425,40 @@ model Message {
 // Documents (Module 18)
 // ---------------------------------------------------------------------------
 
+/// One binary in object storage.
+///
+/// Objects are tracked in their own table rather than as a column on whatever
+/// refers to them, for three reasons: a school's storage quota is the sum of
+/// this table and nothing else, an object whose owning row has gone can be
+/// found and swept up, and the bucket can be reconciled against the database
+/// in either direction.
+///
+/// `key` is a path within the bucket, never a URL. Buckets are private, so a
+/// reader is handed a signed URL minted on demand; keeping a URL here would
+/// bake in the bucket, the endpoint and an expiry outliving its own signature.
+model StoredFile {
+  id        String @id @default(cuid())
+  schoolId  String
+  school    School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  /// Unique because every key embeds a freshly generated UUID.
+  key       String @unique
+  /// The name the file arrived with, used for the download filename.
+  filename  String
+  mimeType  String
+  sizeBytes Int
+  /// DOCUMENT | STUDENT_PHOTO — what the object is for, so a sweep can tell.
+  purpose   String
+
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  document Document?
+  student  Student?
+
+  @@index([schoolId, purpose])
+  @@index([schoolId, createdAt])
+}
+
 model Document {
   id         String   @id @default(cuid())
   schoolId   String
@@ -1430,7 +1469,15 @@ model Document {
   staff      Staff?   @relation(fields: [staffId], references: [id], onDelete: Cascade)
   docType    String // BIRTH_CERTIFICATE | LEAVING_CERTIFICATE | MEDICAL_REPORT | CONTRACT | ID_COPY | OTHER
   title      String
-  fileUrl    String
+  /// The object holding the file, for anything uploaded through the app. Null
+  /// for a row that only records an external link in `fileUrl`, which is all
+  /// this module could do before uploads existed.
+  storedFileId String?     @unique
+  storedFile   StoredFile? @relation(fields: [storedFileId], references: [id], onDelete: SetNull)
+  /// Where the file is when it is not in our own storage — a link to a shared
+  /// drive, say. Uploaded documents are read through `storedFile` instead and
+  /// leave this empty.
+  fileUrl    String?
   mimeType   String?
   sizeBytes  Int?
   uploadedById String?

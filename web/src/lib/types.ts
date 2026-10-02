@@ -76,6 +76,7 @@ export interface Student {
   dateOfBirth: string;
   address: string | null;
   photoUrl: string | null;
+  photoFileId: string | null;
   status: 'ACTIVE' | 'SUSPENDED' | 'GRADUATED' | 'TRANSFERRED' | 'ARCHIVED';
   admissionDate: string;
   medicalConditions: string | null;
@@ -264,4 +265,63 @@ export interface PortalChild {
     stream: { id: string; name: string } | null;
     academicYear: { name: string };
   }>;
+}
+
+/** An object in storage, as the API reports it alongside whatever refers to it. */
+export interface StoredFile {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+export const DOC_TYPES = [
+  'BIRTH_CERTIFICATE',
+  'LEAVING_CERTIFICATE',
+  'MEDICAL_REPORT',
+  'CONTRACT',
+  'ID_COPY',
+  'RESULT_SLIP',
+  'OTHER',
+] as const;
+
+export type DocType = (typeof DOC_TYPES)[number];
+
+export interface SchoolDocument {
+  id: string;
+  docType: DocType;
+  title: string;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  /** Set when the file was uploaded here; null for a recorded external link. */
+  storedFileId: string | null;
+  storedFile: StoredFile | null;
+  fileUrl: string | null;
+  createdAt: string;
+  student?: { admissionNumber: string; firstName: string; lastName: string } | null;
+  staff?: { staffNumber: string; firstName: string; lastName: string } | null;
+}
+
+/**
+ * A link to a stored file. `external` marks a recorded link to somewhere else,
+ * which has no expiry of ours and should not be cached as though it had one.
+ */
+export interface FileLink {
+  url: string;
+  external: boolean;
+  filename?: string;
+  mimeType?: string;
+  expiresInSeconds?: number;
+}
+
+export interface StorageUsageResponse {
+  files: number;
+  documents: number;
+  usedBytes: number;
+  usedMb: number;
+  quotaMb: number;
+  percentUsed: number;
+  remainingBytes: number;
+  maxUploadMb: number;
+  acceptedTypes: string[];
 }
