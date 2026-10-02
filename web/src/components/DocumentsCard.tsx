@@ -41,9 +41,15 @@ const LABELS: Record<DocType, string> = {
 export function DocumentsCard({
   subject,
   subjectId,
+  variant = 'card',
 }: {
   subject: 'student' | 'staff';
   subjectId: string;
+  /**
+   * `bare` drops the surrounding Card, for when this already sits inside one —
+   * a modal, say, which brings its own heading and padding.
+   */
+  variant?: 'card' | 'bare';
 }) {
   const { can } = useAuth();
   const queryClient = useQueryClient();
@@ -117,17 +123,16 @@ export function DocumentsCard({
   const accept = usage.data?.acceptedTypes.join(',') ?? 'image/jpeg,image/png,image/webp,application/pdf';
   const rows = documents.data?.data ?? [];
 
-  return (
-    <Card
-      title="Documents"
-      actions={
-        usage.data && (
-          <span className="text-xs text-slate-500">
-            {usage.data.usedMb}MB of {usage.data.quotaMb}MB used
-          </span>
-        )
-      }
-    >
+  const quotaNote = usage.data && (
+    <span className="text-xs text-slate-500">
+      {usage.data.usedMb}MB of {usage.data.quotaMb}MB used
+    </span>
+  );
+
+  const body = (
+    <>
+      {variant === 'bare' && quotaNote && <p className="mb-3 text-right">{quotaNote}</p>}
+
       {canManage && (
         <form
           className="mb-5 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2"
@@ -285,6 +290,14 @@ export function DocumentsCard({
           </table>
         </TableWrap>
       )}
+    </>
+  );
+
+  if (variant === 'bare') return body;
+
+  return (
+    <Card title="Documents" actions={quotaNote}>
+      {body}
     </Card>
   );
 }

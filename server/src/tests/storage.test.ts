@@ -515,6 +515,238 @@ describe('object storage', () => {
 });
 
 /**
+ * The school-wide register: what is on file, and who is still missing something.
+ *
+ * These are the two queries the per-student view cannot answer, and the
+ * "missing" one in particular is easy to get subtly wrong — it has to count
+ * students with *no* matching document, not documents that happen to be absent
+ * from a join.
+ */
+describe('school-wide document register', () => {
+  let fixture: Fixture;
+  let adminToken: string;
+
+  beforeAll(async () => {
+    setStorageDriver(stubDriver());
+    fixture = await createSchoolFixture();
+    adminToken = await login(fixture.users.admin!.email);
+  });
+
+  afterAll(async () => {
+    await destroyFixture(fixture);
+    setStorageDriver(null);
+  });
+
+  afterEach(async () => {
+    await prisma.document.deleteMany({ where: { schoolId: fixture.school.id } });
+    await prisma.storedFile.deleteMany({ where: { schoolId: fixture.school.id } });
+  });
+
+  /** Files a document without going through an upload, to keep these focused. */
+  async function file(options: {
+    studentId?: string;
+    staffId?: string;
+    docType: string;
+    title: string;
+  }) {
+    return prisma.document.create({
+      data: {
+        schoolId: fixture.school.id,
+        studentId: options.studentId ?? null,
+        staffId: options.staffId ?? null,
+        docType: options.docType,
+        title: options.title,
+        fileUrl: 'https://example.test/x',
+      },
+    });
+  }
+
+  describe('listing', () => {
+    it('matches a search against the document title', async () => {
+      await file({ studentId: fixture.students[0]!.id, docType: 'OTHER', title: 'Transfer letter' });
+      await file({ studentId: fixture.students[1]!.id, docType: 'OTHER', title: 'Bursary form' });
+
+      const res = await request(app)
+        .get('/api/v1/documents?search=transfer')
+        .set(authed(adminToken));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].title).toBe('Transfer letter');
+    });
+
+    it('matches a search against the person it is filed against', async () => {
+      await file({
+        studentId: fixture.students[0]!.id,
+        docType: 'BIRTH_CERTIFICATE',
+        title: 'Certificate',
+      });
+      await file({ staffId: fixture.teacherStaffId, docType: 'CONTRACT', title: 'Contract' });
+
+      // Student1 is the fixture's first student; the staff member is "Teacher".
+      const byStudent = await request(app)
+        .get('/api/v1/documents?search=Student1')
+        .set(authed(adminToken));
+      expect(byStudent.body.data).toHaveLength(1);
+      expect(byStudent.body.data[0].title).toBe('Certificate');
+
+      const byStaff = await request(app)
+        .get('/api/v1/documents?search=Teacher')
+        .set(authed(adminToken));
+      expect(byStaff.body.data).toHaveLength(1);
+      expect(byStaff.body.data[0].title).toBe('Contract');
+    });
+
+    it('searches without regard to case', async () => {
+      await file({ studentId: fixture.students[0]!.id, docType: 'OTHER', title: 'Bursary Form' });
+
+      const res = await request(app)
+        .get('/api/v1/documents?search=BURSARY')
+        .set(authed(adminToken));
+      expect(res.body.data).toHaveLength(1);
+    });
+
+    it('separates documents filed against students from those against staff', async () => {
+      await file({ studentId: fixture.students[0]!.id, docType: 'ID_COPY', title: 'Student ID' });
+      await file({ staffId: fixture.teacherStaffId, docType: 'ID_COPY', title: 'Staff ID' });
+
+      const students = await request(app)
+        .get('/api/v1/documents?subject=student')
+        .set(authed(adminToken));
+      expect(students.body.data.map((d: { title: string }) => d.title)).toEqual(['Student ID']);
+
+      const staff = await request(app)
+        .get('/api/v1/documents?subject=staff')
+        .set(authed(adminToken));
+      expect(staff.body.data.map((d: { title: string }) => d.title)).toEqual(['Staff ID']);
+
+      const both = await request(app).get('/api/v1/documents').set(authed(adminToken));
+      expect(both.body.data).toHaveLength(2);
+    });
+
+    it('does not show another school\'s documents', async () => {
+      await file({ studentId: fixture.students[0]!.id, docType: 'OTHER', title: 'Ours' });
+      const other = await createSchoolFixture();
+      try {
+        const otherToken = await login(other.users.admin!.email);
+        const res = await request(app).get('/api/v1/documents').set(authed(otherToken));
+        expect(res.body.data).toHaveLength(0);
+      } finally {
+        await destroyFixture(other);
+      }
+    });
+  });
+
+  describe('missing documents', () => {
+    it('lists every student without one, and drops them as they are filed', async () => {
+      const before = await request(app)
+        .get('/api/v1/documents/missing?docType=BIRTH_CERTIFICATE')
+        .set(authed(adminToken));
+
+      expect(before.status).toBe(200);
+      // All three fixture students start with nothing on file.
+      expect(before.body.meta.total).toBe(3);
+
+      await file({
+        studentId: fixture.students[0]!.id,
+        docType: 'BIRTH_CERTIFICATE',
+        title: 'Certificate',
+      });
+
+      const after = await request(app)
+        .get('/api/v1/documents/missing?docType=BIRTH_CERTIFICATE')
+        .set(authed(adminToken));
+
+      expect(after.body.meta.total).toBe(2);
+      expect(after.body.data.map((s: { id: string }) => s.id)).not.toContain(
+        fixture.students[0]!.id,
+      );
+    });
+
+    it('counts a different type independently', async () => {
+      await file({
+        studentId: fixture.students[0]!.id,
+        docType: 'BIRTH_CERTIFICATE',
+        title: 'Certificate',
+      });
+
+      // The birth certificate is on file; the medical report is not.
+      const medical = await request(app)
+        .get('/api/v1/documents/missing?docType=MEDICAL_REPORT')
+        .set(authed(adminToken));
+      expect(medical.body.meta.total).toBe(3);
+    });
+
+    it('leaves archived students out — they have left', async () => {
+      await prisma.student.update({
+        where: { id: fixture.students[2]!.id },
+        data: { status: 'ARCHIVED' },
+      });
+      try {
+        const res = await request(app)
+          .get('/api/v1/documents/missing?docType=BIRTH_CERTIFICATE')
+          .set(authed(adminToken));
+        expect(res.body.meta.total).toBe(2);
+      } finally {
+        await prisma.student.update({
+          where: { id: fixture.students[2]!.id },
+          data: { status: 'ACTIVE' },
+        });
+      }
+    });
+
+    it('narrows to a class', async () => {
+      const inClass = await request(app)
+        .get(`/api/v1/documents/missing?docType=BIRTH_CERTIFICATE&classId=${fixture.classId}`)
+        .set(authed(adminToken));
+      expect(inClass.body.meta.total).toBe(3);
+
+      const elsewhere = await request(app)
+        .get('/api/v1/documents/missing?docType=BIRTH_CERTIFICATE&classId=no-such-class')
+        .set(authed(adminToken));
+      expect(elsewhere.body.meta.total).toBe(0);
+    });
+
+    it('reports the class each student is in, so the list is actionable', async () => {
+      const res = await request(app)
+        .get('/api/v1/documents/missing?docType=BIRTH_CERTIFICATE')
+        .set(authed(adminToken));
+
+      expect(res.body.data[0].admissionNumber).toBeTruthy();
+      expect(res.body.data[0].enrollments[0].schoolClass.name).toBe('Form 1');
+    });
+
+    it('counts only its own school', async () => {
+      const other = await createSchoolFixture();
+      try {
+        const res = await request(app)
+          .get('/api/v1/documents/missing?docType=BIRTH_CERTIFICATE')
+          .set(authed(adminToken));
+        // Three here, not six.
+        expect(res.body.meta.total).toBe(3);
+      } finally {
+        await destroyFixture(other);
+      }
+    });
+
+    it('requires a document type to ask about', async () => {
+      const res = await request(app).get('/api/v1/documents/missing').set(authed(adminToken));
+      expect(res.status).toBe(400);
+    });
+
+    it('is not confused for a document id', async () => {
+      // `/missing` and `/usage` are literal paths that must not be captured by
+      // the `/:id/file` route beside them.
+      const res = await request(app)
+        .get('/api/v1/documents/missing?docType=OTHER')
+        .set(authed(adminToken));
+      expect(res.status).toBe(200);
+      expect(res.body.meta).toBeTruthy();
+    });
+  });
+});
+
+/**
  * The local driver, exercised for real against a temporary directory.
  *
  * This is the path a development machine and a single-server installation take,
