@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { get } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { initials, titleCase } from '../lib/format';
 import type { Permission, Role } from '../lib/types';
+import { ErrorBoundary } from './ErrorBoundary';
 
 interface NavItem {
   label: string;
@@ -77,6 +78,7 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
 export function AppLayout() {
   const { user, signOut, can, hasRole, activeSchoolId, setActiveSchool, isStandalone } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
 
   // A standalone installation has no tenants to administer, so platform staff
@@ -252,7 +254,14 @@ export function AppLayout() {
       </aside>
 
       <main className="app-main min-w-0 flex-1 px-4 py-6 sm:px-6 lg:h-screen lg:overflow-y-auto lg:px-8">
-        <Outlet />
+        {/*
+          Keyed on the path so that navigating away clears a failed page. The
+          boundary sits inside the shell, so a page that throws leaves the
+          navigation usable rather than blanking the window.
+        */}
+        <ErrorBoundary resetKey={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );
