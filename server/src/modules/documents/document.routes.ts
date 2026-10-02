@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { StudentStatus } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { asyncHandler, paginate, paginationSchema, skipTake, validate } from '../../lib/http.js';
 import { requirePermission, schoolIdOf } from '../../middleware/auth.js';
@@ -35,6 +36,10 @@ documentRouter.get(
       studentId: z.string().optional(),
       staffId: z.string().optional(),
       docType: z.enum(DOC_TYPES).optional(),
+      /** Matches the title, the stored filename, or whoever it is filed against. */
+      search: z.string().trim().min(1).optional(),
+      /** Narrows to documents filed against a student, or against staff. */
+      subject: z.enum(['student', 'staff']).optional(),
     }),
     'query',
   ),
@@ -45,12 +50,35 @@ documentRouter.get(
       studentId?: string;
       staffId?: string;
       docType?: string;
+      search?: string;
+      subject?: 'student' | 'staff';
     };
+
+    // A registrar searching "Amina" means the person, not the document title,
+    // but searching "birth" means the title — so both are matched.
+    const search = q.search
+      ? {
+          OR: [
+            { title: { contains: q.search, mode: 'insensitive' as const } },
+            { storedFile: { filename: { contains: q.search, mode: 'insensitive' as const } } },
+            { student: { firstName: { contains: q.search, mode: 'insensitive' as const } } },
+            { student: { lastName: { contains: q.search, mode: 'insensitive' as const } } },
+            { student: { admissionNumber: { contains: q.search, mode: 'insensitive' as const } } },
+            { staff: { firstName: { contains: q.search, mode: 'insensitive' as const } } },
+            { staff: { lastName: { contains: q.search, mode: 'insensitive' as const } } },
+            { staff: { staffNumber: { contains: q.search, mode: 'insensitive' as const } } },
+          ],
+        }
+      : {};
+
     const where = {
       schoolId: schoolIdOf(req),
       ...(q.studentId ? { studentId: q.studentId } : {}),
       ...(q.staffId ? { staffId: q.staffId } : {}),
       ...(q.docType ? { docType: q.docType } : {}),
+      ...(q.subject === 'student' ? { studentId: { not: null } } : {}),
+      ...(q.subject === 'staff' ? { staffId: { not: null } } : {}),
+      ...search,
     };
 
     const [data, total] = await Promise.all([
@@ -258,6 +286,83 @@ documentRouter.delete(
 
     await audit(req, { action: 'document.delete', entityType: 'Document', entityId: id });
     res.status(204).send();
+  }),
+);
+
+/**
+ * Students with no document of a given type on file.
+ *
+ * The question a registrar actually has at the start of a year is not "what
+ * has been filed" but "who is still missing a birth certificate" — a list that
+ * is impossible to get from the documents table by reading it forwards.
+ *
+ * Archived students are left out: they have left, and chasing paperwork for
+ * them is not the point of the list.
+ */
+documentRouter.get(
+  '/missing',
+  requirePermission('documents:read'),
+  validate(
+    paginationSchema.extend({
+      docType: z.enum(DOC_TYPES),
+      classId: z.string().optional(),
+      streamId: z.string().optional(),
+    }),
+    'query',
+  ),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const q = req.query as unknown as {
+      page: number;
+      pageSize: number;
+      docType: string;
+      classId?: string;
+      streamId?: string;
+    };
+
+    const where = {
+      schoolId,
+      status: { not: StudentStatus.ARCHIVED },
+      // `none` is the whole point: students for whom no such document exists.
+      documents: { none: { docType: q.docType } },
+      ...(q.classId || q.streamId
+        ? {
+            enrollments: {
+              some: {
+                isActive: true,
+                ...(q.classId ? { classId: q.classId } : {}),
+                ...(q.streamId ? { streamId: q.streamId } : {}),
+              },
+            },
+          }
+        : {}),
+    };
+
+    const [data, total] = await Promise.all([
+      prisma.student.findMany({
+        where,
+        ...skipTake(q.page, q.pageSize),
+        orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+        select: {
+          id: true,
+          admissionNumber: true,
+          firstName: true,
+          lastName: true,
+          status: true,
+          enrollments: {
+            where: { isActive: true },
+            take: 1,
+            select: {
+              schoolClass: { select: { name: true } },
+              stream: { select: { name: true } },
+            },
+          },
+        },
+      }),
+      prisma.student.count({ where }),
+    ]);
+
+    res.json(paginate(data, total, q.page, q.pageSize));
   }),
 );
 

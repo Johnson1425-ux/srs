@@ -265,7 +265,7 @@ REST, JSON, versioned under `/api/v1`, grouped by resource per PRD section 9.
 | `/transport` | `vehicles`, `routes`, `allocations`, `manifest`, `fuel`, `maintenance` |
 | `/hostel` | hostels, `rooms`, `allocate`, `release` |
 | `/notifications` | `announcements`, `templates`, `messages/bulk`, `inbox` |
-| `/documents` | list, `upload`, register a link, `:id/file`, delete, `usage` |
+| `/documents` | list (search, type, student/staff), `upload`, register a link, `:id/file`, delete, `missing`, `usage` |
 | `/students/:id/photo` | set, get a link, remove |
 | `/storage/local` | serves a signed local-storage link (public, no token) |
 | `/reports` | students, admissions, attendance, fee collection, outstanding, academic and teacher performance, library, inventory, payroll |
@@ -896,6 +896,23 @@ next person who opened it under the type they were promised.
 
 `STORAGE_MAX_UPLOAD_MB` (10 by default) caps a single upload. Because uploads
 are buffered, it is also the cap on how much memory one request can take.
+
+#### Where this appears in the app
+
+Uploading happens where the record is, because a document only means something
+filed against someone:
+
+- **Students** → open a student → **Documents** tab, and the photograph sits on
+  the Profile tab beside the rest of their details.
+- **Staff** → the **Documents** action on a staff row.
+
+**Documents** in the main navigation is the school-wide register, for the two
+questions a single record cannot answer: what is on file across the school
+(searchable by title, filename, or the name or number of whoever it is filed
+against), and **Missing** — every student with no document of a chosen type,
+which is the list a registrar actually wants at the start of a year. Archived
+students are left out of it; they have left, and chasing their paperwork is not
+the point.
 
 #### Quotas
 
