@@ -73,6 +73,44 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   ADMIN: SCHOOL_ADMIN,
 
+  /**
+   * The academic head of the school.
+   *
+   * Runs teaching and the students: the timetable, admissions, examinations and
+   * what is on file about a child. Deliberately holds nothing financial — fees,
+   * payments, accounting and payroll are the administrator's and the
+   * accountant's — and cannot create user accounts or change school settings,
+   * so the senior academic post is not also a way around every other control.
+   */
+  HEAD_TEACHER: [
+    'school:read',
+    'academics:read',
+    'academics:manage',
+    'students:read',
+    'students:manage',
+    'students:promote',
+    'guardians:read',
+    'guardians:manage',
+    'staff:read',
+    'attendance:read',
+    'attendance:record',
+    'exams:read',
+    'exams:manage',
+    'exams:enter_marks',
+    // Publishing texts every family their child's results, which is the head
+    // teacher's call to make rather than a subject teacher's.
+    'exams:publish',
+    'library:read',
+    'inventory:read',
+    'transport:read',
+    'hostel:read',
+    'communication:read',
+    'communication:send',
+    'documents:read',
+    'documents:manage',
+    'reports:read',
+  ],
+
   // Finance roles need to read the academic structure (classes, terms, years)
   // because fee structures, invoicing and reports are all scoped by it.
   ACCOUNTANT: [
@@ -93,7 +131,6 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'reports:read',
     'communication:read',
     'communication:send',
-    'documents:read',
   ],
 
   TEACHER: [
@@ -107,7 +144,6 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'exams:enter_marks',
     'reports:read',
     'communication:read',
-    'documents:read',
   ],
 
   // Students and parents reach their data through /portal/* routes, which are

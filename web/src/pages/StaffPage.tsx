@@ -22,6 +22,7 @@ import type { Paginated, StaffMember } from '../lib/types';
 
 const PORTAL_ROLES = [
   'TEACHER',
+  'HEAD_TEACHER',
   'ACCOUNTANT',
   'LIBRARIAN',
   'RECEPTIONIST',

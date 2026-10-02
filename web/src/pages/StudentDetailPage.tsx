@@ -16,7 +16,7 @@ import {
 } from '../components/ui';
 import { DocumentsCard } from '../components/DocumentsCard';
 import { StudentPhoto } from '../components/StudentPhoto';
-import type { Guardian, Invoice, Paginated, Payment, Student } from '../lib/types';
+import type { Guardian, Invoice, Paginated, Payment, Permission, Student } from '../lib/types';
 
 interface BalanceResponse {
   summary: { totalBilled: string; totalPaid: string; balance: string; invoiceCount: number };
@@ -32,6 +32,20 @@ interface AttendanceResponse {
 const TABS = ['Profile', 'Attendance', 'Fees', 'Results', 'Documents'] as const;
 type Tab = (typeof TABS)[number];
 
+/**
+ * Tabs a role is allowed to see at all.
+ *
+ * The guard on each panel is the server's, but a tab that opens onto a refusal
+ * is worse than one that is not offered — so a teacher, who may no longer read
+ * what is on file about a child, is not shown the Documents tab either.
+ */
+const TAB_PERMISSION: Partial<Record<Tab, Permission>> = {
+  Attendance: 'attendance:read',
+  Fees: 'fees:read',
+  Results: 'exams:read',
+  Documents: 'documents:read',
+};
+
 export function StudentDetailPage() {
   const { id = '' } = useParams();
   const { can, user } = useAuth();
@@ -39,6 +53,10 @@ export function StudentDetailPage() {
   const currency = user?.school?.currency ?? 'TZS';
 
   const [tab, setTab] = useState<Tab>('Profile');
+  const visibleTabs = TABS.filter((t) => {
+    const needed = TAB_PERMISSION[t];
+    return !needed || can(needed);
+  });
   const [statusModal, setStatusModal] = useState(false);
   const [newStatus, setNewStatus] = useState('SUSPENDED');
   const [reason, setReason] = useState('');
@@ -159,7 +177,7 @@ export function StudentDetailPage() {
       </div>
 
       <div className="mb-5 flex gap-1 overflow-x-auto border-b border-slate-200">
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t}
             type="button"

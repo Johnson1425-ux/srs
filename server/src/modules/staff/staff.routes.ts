@@ -104,7 +104,7 @@ const staffSchema = z.object({
   bankAccount: z.string().max(40).nullish(),
   createPortalAccount: z.boolean().default(true),
   portalRole: z
-    .enum(['TEACHER', 'ACCOUNTANT', 'LIBRARIAN', 'DRIVER', 'RECEPTIONIST', 'TRANSPORT_OFFICER', 'ADMIN'])
+    .enum(['TEACHER', 'HEAD_TEACHER', 'ACCOUNTANT', 'LIBRARIAN', 'DRIVER', 'RECEPTIONIST', 'TRANSPORT_OFFICER', 'ADMIN'])
     .default('TEACHER'),
 });
 

@@ -2,6 +2,7 @@ export type Role =
   | 'SUPER_ADMIN'
   | 'SCHOOL_OWNER'
   | 'ADMIN'
+  | 'HEAD_TEACHER'
   | 'ACCOUNTANT'
   | 'TEACHER'
   | 'STUDENT'

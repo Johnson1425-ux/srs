@@ -107,6 +107,8 @@ export async function createSchoolFixture(db: PrismaClient = prisma): Promise<Fi
     ['teacher', Role.TEACHER],
     ['owner', Role.SCHOOL_OWNER],
     ['librarian', Role.LIBRARIAN],
+    ['headteacher', Role.HEAD_TEACHER],
+    ['receptionist', Role.RECEPTIONIST],
   ];
 
   const users: Fixture['users'] = {};

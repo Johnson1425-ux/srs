@@ -857,6 +857,141 @@ describe('local storage driver', () => {
 });
 
 /**
+ * Who may see what is in a student's file.
+ *
+ * A file holds a birth certificate, a medical report, an identity document —
+ * material a school keeps because it must, not because everyone teaching the
+ * child needs it. The matrix is asserted here rather than left to the
+ * permissions table alone, because a widening is exactly the kind of change
+ * that passes review unnoticed.
+ */
+describe('who can reach documents', () => {
+  let fixture: Fixture;
+  let documentId: string;
+
+  beforeAll(async () => {
+    setStorageDriver(stubDriver());
+    fixture = await createSchoolFixture();
+    const doc = await prisma.document.create({
+      data: {
+        schoolId: fixture.school.id,
+        studentId: fixture.students[0]!.id,
+        docType: 'BIRTH_CERTIFICATE',
+        title: 'Birth certificate',
+        fileUrl: 'https://example.test/x',
+      },
+    });
+    documentId = doc.id;
+  });
+
+  afterAll(async () => {
+    await destroyFixture(fixture);
+    setStorageDriver(null);
+  });
+
+  /** Roles allowed to see a file, and whether they may also change one. */
+  const ALLOWED: Array<[keyof Fixture['users'], boolean]> = [
+    ['admin', true],
+    ['headteacher', true],
+    ['receptionist', true],
+    // Read-only across the whole school by design, documents included.
+    ['owner', false],
+  ];
+
+  /** Roles with no business in a student's file at all. */
+  const REFUSED: Array<keyof Fixture['users']> = ['teacher', 'accountant', 'librarian'];
+
+  for (const [role, canManage] of ALLOWED) {
+    it(`lets a ${role} list and open a document`, async () => {
+      const token = await login(fixture.users[role]!.email);
+
+      const list = await request(app).get('/api/v1/documents').set(authed(token));
+      expect(list.status).toBe(200);
+      expect(list.body.data).toHaveLength(1);
+
+      const link = await request(app)
+        .get(`/api/v1/documents/${documentId}/file`)
+        .set(authed(token));
+      expect(link.status).toBe(200);
+
+      const missing = await request(app)
+        .get('/api/v1/documents/missing?docType=BIRTH_CERTIFICATE')
+        .set(authed(token));
+      expect(missing.status).toBe(200);
+    });
+
+    it(`${canManage ? 'lets' : 'refuses'} a ${role} ${canManage ? 'to upload' : 'uploading'}`, async () => {
+      const token = await login(fixture.users[role]!.email);
+      const res = await request(app)
+        .post('/api/v1/documents/upload')
+        .set(authed(token))
+        .field('studentId', fixture.students[1]!.id)
+        .field('docType', 'OTHER')
+        .field('title', 'Attempted upload')
+        .attach('file', PDF, 'a.pdf');
+
+      expect(res.status).toBe(canManage ? 201 : 403);
+      if (canManage) {
+        // Leave the fixture as the next case expects to find it.
+        await prisma.document.delete({ where: { id: res.body.id } });
+        await prisma.storedFile.delete({ where: { id: res.body.storedFileId } });
+      }
+    });
+  }
+
+  for (const role of REFUSED) {
+    it(`refuses a ${role} every way into a document`, async () => {
+      const token = await login(fixture.users[role]!.email);
+
+      for (const path of [
+        '/api/v1/documents',
+        `/api/v1/documents/${documentId}/file`,
+        '/api/v1/documents/missing?docType=BIRTH_CERTIFICATE',
+        '/api/v1/documents/usage',
+      ]) {
+        const res = await request(app).get(path).set(authed(token));
+        expect(res.status, `GET ${path} as ${role}`).toBe(403);
+      }
+
+      const upload = await request(app)
+        .post('/api/v1/documents/upload')
+        .set(authed(token))
+        .field('studentId', fixture.students[0]!.id)
+        .field('docType', 'OTHER')
+        .field('title', 'Not theirs to file')
+        .attach('file', PDF, 'a.pdf');
+      expect(upload.status).toBe(403);
+
+      const remove = await request(app)
+        .delete(`/api/v1/documents/${documentId}`)
+        .set(authed(token));
+      expect(remove.status).toBe(403);
+    });
+  }
+
+  it('still lets a teacher read the marks and attendance they need', async () => {
+    // The point is to narrow documents, not to break teaching.
+    const token = await login(fixture.users.teacher!.email);
+    expect((await request(app).get('/api/v1/students').set(authed(token))).status).toBe(200);
+    expect((await request(app).get('/api/v1/exams').set(authed(token))).status).toBe(200);
+  });
+
+  it('gives the head teacher the academic reach the post needs', async () => {
+    const token = await login(fixture.users.headteacher!.email);
+    for (const path of ['/api/v1/students', '/api/v1/exams', '/api/v1/academics/classes']) {
+      expect((await request(app).get(path).set(authed(token))).status, path).toBe(200);
+    }
+  });
+
+  it('keeps the head teacher out of the money', async () => {
+    const token = await login(fixture.users.headteacher!.email);
+    // Reading fees is one thing; the head teacher holds neither read nor write.
+    expect((await request(app).get('/api/v1/accounting/ledger').set(authed(token))).status).toBe(403);
+    expect((await request(app).get('/api/v1/users').set(authed(token))).status).toBe(403);
+  });
+});
+
+/**
  * A bucket that is only half set up.
  *
  * The likely misconfiguration is not "no storage at all" — the local driver

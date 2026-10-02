@@ -22,6 +22,7 @@ import type { Paginated } from '../lib/types';
 const ASSIGNABLE_ROLES = [
   'ADMIN',
   'SCHOOL_OWNER',
+  'HEAD_TEACHER',
   'ACCOUNTANT',
   'TEACHER',
   'LIBRARIAN',

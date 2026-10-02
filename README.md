@@ -228,6 +228,7 @@ Permissions are `resource:action` strings; roles map to sets of them in
 | Super Admin       | Full platform access across all schools                            |
 | School Owner      | Read-only across the whole school (all `*:read` permissions)        |
 | Administrator     | Full school management                                              |
+| Head Teacher      | Academic head: timetable, admissions, examinations and documents. Holds nothing financial, and cannot create accounts or change school settings |
 | Accountant        | Fees, payments, accounting, payroll; reads students and academics   |
 | Teacher           | Attendance, marks entry, assignments; reads students and academics  |
 | Receptionist      | Admissions, guardian records, documents                             |
@@ -239,6 +240,19 @@ Permissions are `resource:action` strings; roles map to sets of them in
 
 The frontend hides what a role cannot use, but every route is enforced
 server-side — the UI is a convenience, not the control.
+
+**Documents are deliberately narrow.** A student's file holds a birth
+certificate, a medical report, an identity document — material a school holds
+because it must, not because everyone who teaches the child needs it. So
+`documents:read` belongs to the administrator, the head teacher, the school
+owner and the receptionist, and to nobody else: a teacher can see the child's
+marks and attendance but not their paperwork, and the accountant can see what
+the family owes but not their documents. `documents:manage` is narrower still,
+dropping the school owner, whose access is read-only throughout.
+
+The receptionist keeps both because admissions is where a birth certificate is
+actually handed over; taking it away would mean the one person holding the
+document is the one person who cannot file it.
 
 ---
 
@@ -299,9 +313,11 @@ All demo accounts use the password **`Passw0rd!`**
 | ------------- | ----- |
 | Super Admin   | `superadmin@sms.co.tz` |
 | School Owner  | `owner@mlimani.ac.tz` |
-| Administrator | `daniel.mwakalinga@mlimani.ac.tz` |
+| Administrator | `grace.mallya@mlimani.ac.tz` |
+| Head Teacher  | `daniel.mwakalinga@mlimani.ac.tz` |
 | Accountant    | `regina.kessy@mlimani.ac.tz` |
 | Teacher       | `anna.shirima@mlimani.ac.tz` |
+| Receptionist  | `christina.mbogo@mlimani.ac.tz` |
 | Librarian     | `yusuf.ally@mlimani.ac.tz` |
 | Parent        | `parent.1a@mlimani.ac.tz` |
 | Student       | `student.1a@mlimani.ac.tz` |

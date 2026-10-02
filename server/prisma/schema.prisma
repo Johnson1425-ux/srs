@@ -28,6 +28,10 @@ enum Role {
   SUPER_ADMIN
   SCHOOL_OWNER
   ADMIN
+  /// The academic head of the school. Distinct from SCHOOL_OWNER, who owns the
+  /// institution and watches it read-only, and from ADMIN, who runs its
+  /// administration including fees, payroll and user accounts.
+  HEAD_TEACHER
   ACCOUNTANT
   TEACHER
   STUDENT

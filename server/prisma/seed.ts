@@ -226,8 +226,15 @@ async function main(): Promise<void> {
   });
 
   const headTeacher = await createStaff({
-    firstName: 'Daniel', lastName: 'Mwakalinga', gender: Gender.MALE, role: Role.ADMIN,
+    firstName: 'Daniel', lastName: 'Mwakalinga', gender: Gender.MALE, role: Role.HEAD_TEACHER,
     jobTitle: 'Head Teacher', basicSalary: 2_400_000, index: 1,
+  });
+  // The administrator is a separate post from the head teacher: one runs the
+  // school's administration, the other its teaching.
+  await createStaff({
+    firstName: 'Grace', lastName: 'Mallya', gender: Gender.FEMALE, role: Role.ADMIN,
+    jobTitle: 'School Administrator', staffType: StaffType.NON_TEACHING,
+    basicSalary: 1_800_000, index: 6,
   });
   await createStaff({
     firstName: 'Regina', lastName: 'Kessy', gender: Gender.FEMALE, role: Role.ACCOUNTANT,
@@ -835,9 +842,11 @@ async function main(): Promise<void> {
   console.log('  ─────────────────────────────────────────────');
   console.log('  Super admin   superadmin@sms.co.tz');
   console.log('  School owner  owner@mlimani.ac.tz');
-  console.log('  Administrator daniel.mwakalinga@mlimani.ac.tz');
+  console.log('  Administrator grace.mallya@mlimani.ac.tz');
+  console.log('  Head teacher  daniel.mwakalinga@mlimani.ac.tz');
   console.log('  Accountant    regina.kessy@mlimani.ac.tz');
   console.log('  Teacher       anna.shirima@mlimani.ac.tz');
+  console.log('  Receptionist  christina.mbogo@mlimani.ac.tz');
   console.log('  Librarian     yusuf.ally@mlimani.ac.tz');
   console.log('  Parent        parent.1a@mlimani.ac.tz');
   console.log('  Student       student.1a@mlimani.ac.tz');
