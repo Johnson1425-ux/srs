@@ -53,6 +53,7 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
   {
     section: 'Operations',
     items: [
+      { label: 'Documents', to: '/documents', icon: '📁', permissions: ['documents:read'] },
       { label: 'Library', to: '/library', icon: '📖', permissions: ['library:read'] },
       { label: 'Inventory', to: '/inventory', icon: '📦', permissions: ['inventory:read'] },
       { label: 'Transport', to: '/transport', icon: '🚌', permissions: ['transport:read'] },

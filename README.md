@@ -18,6 +18,7 @@ parent communication — with role-scoped portals for staff, parents and student
 - [Demo data and logins](#demo-data-and-logins)
 - [Testing](#testing)
 - [Deployment](#deployment)
+- [Object storage](#object-storage)
 - [PRD coverage](#prd-coverage)
 - [Deviations from the PRD](#deviations-from-the-prd)
 
@@ -264,7 +265,9 @@ REST, JSON, versioned under `/api/v1`, grouped by resource per PRD section 9.
 | `/transport` | `vehicles`, `routes`, `allocations`, `manifest`, `fuel`, `maintenance` |
 | `/hostel` | hostels, `rooms`, `allocate`, `release` |
 | `/notifications` | `announcements`, `templates`, `messages/bulk`, `inbox` |
-| `/documents` | list, register, delete, `usage` |
+| `/documents` | list (search, type, student/staff), `upload`, register a link, `:id/file`, delete, `missing`, `usage` |
+| `/students/:id/photo` | set, get a link, remove |
+| `/storage/local` | serves a signed local-storage link (public, no token) |
 | `/reports` | students, admissions, attendance, fee collection, outstanding, academic and teacher performance, library, inventory, payroll |
 | `/dashboard` | widgets, `enrollment-by-class`, `collection-trend` |
 | `/portal` | `children`, and per-student overview, attendance, results, fees, homework, timetable |
@@ -817,6 +820,132 @@ before it is paid for.
 
 ---
 
+### Object storage
+
+Student photographs, scanned birth certificates and staff contracts are
+binaries, so they live in a bucket; the database keeps only a key pointing at
+one. Three drivers, chosen with `STORAGE_DRIVER`:
+
+| Driver | Where files go | Use it for |
+| ------ | -------------- | ---------- |
+| `local` | the filesystem at `STORAGE_LOCAL_PATH` | development, and a single server with a real disk |
+| `r2` | Cloudflare R2 | a deployment — reads cost no egress |
+| `s3` | any S3-compatible bucket | AWS, MinIO, Wasabi |
+
+`local` is the default and needs no credentials at all. It is genuinely
+unsuitable for more than one API instance, though: two containers would each
+hold half the uploads and disagree about which existed.
+
+#### Setting up Cloudflare R2
+
+1. **Create the bucket.** In the Cloudflare dashboard, R2 → Create bucket. Pick
+   a location near the schools using it — `WEUR` is a reasonable choice for
+   East Africa — and leave it **private**. Nothing here needs a public bucket
+   or a custom domain.
+2. **Create an API token.** R2 → Manage API tokens → Create API token, with
+   permission **Object Read & Write** and scoped to that one bucket. An
+   account-wide token hands a compromised server every bucket you own, for no
+   gain. It shows an **Access Key ID** and a **Secret Access Key** once.
+3. **Find the account id.** It is on the R2 overview page. The endpoint is
+   derived from it, so there is no URL to copy.
+4. **Set the variables:**
+
+   ```bash
+   STORAGE_DRIVER=r2
+   R2_ACCOUNT_ID=<account id>
+   R2_BUCKET=<bucket name>
+   R2_ACCESS_KEY_ID=<access key id>
+   R2_SECRET_ACCESS_KEY=<secret access key>
+   ```
+
+A half-filled set is treated as unconfigured, and the error names the variable
+that is missing rather than failing on the first upload.
+
+#### How a file travels
+
+An upload goes **through the API**, which buffers it, checks it and forwards it
+to the bucket. That costs a little bandwidth and buys three things worth more:
+the size limit, the type allowlist and the school's quota are enforced
+somewhere a browser cannot edit, and the bucket needs no CORS policy and no
+publicly writable path.
+
+A download does **not** go through the API. It asks for a link, and the API
+returns a presigned URL valid for `STORAGE_URL_TTL_SECONDS` (five minutes by
+default) that the browser fetches straight from the bucket. So a 4MB scan
+crosses the API once, on the way in, and never on the way out.
+
+Under `local` there is no bucket to presign against, so the app signs its own
+links with an HMAC and serves them from `/api/v1/storage/local`. That route is
+public by design: the signature in the query string names one key and carries
+its own expiry, which is what lets an `<img>` tag load a photograph without
+putting a token in a header. It is the same reasoning as the texted results
+links above.
+
+Either way the URL is a bearer credential for one file until it expires. It is
+fetched at the moment of the click rather than rendered into the page, so a
+link is never older than the click that used it.
+
+#### What is accepted
+
+JPEG, PNG, WebP and PDF — everything a registrar actually files is a
+photograph or a scan, and each addition is another parser exposed to a
+stranger's bytes. The type is determined from the file's leading bytes, not
+from the `Content-Type` the browser sent: an executable named `report.pdf`
+would otherwise pass the allowlist on its own say-so and be handed back to the
+next person who opened it under the type they were promised.
+
+`STORAGE_MAX_UPLOAD_MB` (10 by default) caps a single upload. Because uploads
+are buffered, it is also the cap on how much memory one request can take.
+
+#### Where this appears in the app
+
+Uploading happens where the record is, because a document only means something
+filed against someone:
+
+- **Students** → open a student → **Documents** tab, and the photograph sits on
+  the Profile tab beside the rest of their details.
+- **Staff** → the **Documents** action on a staff row.
+
+**Documents** in the main navigation is the school-wide register, for the two
+questions a single record cannot answer: what is on file across the school
+(searchable by title, filename, or the name or number of whoever it is filed
+against), and **Missing** — every student with no document of a chosen type,
+which is the list a registrar actually wants at the start of a year. Archived
+students are left out of it; they have left, and chasing their paperwork is not
+the point.
+
+#### Quotas
+
+Every object is recorded against its school, and `School.storageQuotaMb` (1GB
+by default, set per plan by platform staff) is checked *before* the upload
+starts — so a school that is already full is told so rather than billed for the
+transfer and then refused. `GET /api/v1/documents/usage` reports usage, the
+quota and the accepted types; the upload form reads its limits from it, so it
+states the same rules it will be held to.
+
+Photographs count against the quota alongside documents. Replacing a
+photograph deletes the previous one, so a student never occupies more than one
+portrait's worth however often it is retaken.
+
+Keys are laid out as `schools/<school id>/{documents,photos}/<uuid><ext>`. The
+school comes first so that one bucket is safe to share between tenants: a
+scoped token, a lifecycle rule or a bulk delete can address exactly one
+school's objects by prefix, and a key from the wrong tenant is visibly wrong
+rather than merely unauthorised. The uploaded filename is kept in the database
+but not in the key — only its extension survives.
+
+#### If an upload and its record disagree
+
+The two cannot be written atomically, so the order is chosen to fail safely.
+An upload stores the object first and the row second, removing the object if
+the row fails. A delete removes the row first and the object second, logging
+the key if the bucket call fails. The result of a crash at the wrong moment is
+therefore an object nobody references — which costs a little storage and can
+be found from the bucket side — rather than a row pointing at a file that will
+not open.
+
+---
+
 ## PRD coverage
 
 | # | Module | Status |
@@ -838,7 +967,7 @@ before it is paid for.
 | 15 | Hostel | Rooms, beds, occupancy, boarders, allocation with gender and capacity rules |
 | 16 | Communication | Email/SMS/in-app channels via Africa's Talking, NextSMS or SMTP; announcements, templates with placeholders, bulk messaging by audience, retries and per-message delivery status |
 | 17 | Reports | All listed reports with CSV/Excel export; PDF via the print-optimised receipt and report-card views |
-| 18 | Document Management | Metadata registry for all listed document types, plus storage-quota tracking |
+| 18 | Document Management | Upload, download and deletion for all listed document types, on Cloudflare R2, any S3-compatible bucket or the local disk; student photographs; per-school storage quota enforced on upload |
 | 19 | Parent Portal | Attendance, results, homework, timetable, fees, announcements |
 | 20 | Student Portal | Assignments with submission, attendance, results, timetable, announcements |
 | 21 | Teacher Portal | Attendance, marks, assignments, student performance, communication |
@@ -884,9 +1013,14 @@ Stated plainly, with reasons:
    SMS and email **are** wired up — Africa's Talking and SMTP respectively.
    See the deployment section.
 
-5. **File uploads.** The document module records metadata and a storage URL; the
-   binary upload path to S3/Azure Blob is not wired up, so `STORAGE_DRIVER` is
-   currently a placeholder.
+5. **File uploads.** Implemented, on Cloudflare R2 by default — see
+   [Object storage](#object-storage). Azure Blob is not supported: the PRD
+   listed it as an alternative to S3, and R2 plus the S3-compatible driver
+   covers that ground, so `STORAGE_DRIVER` accepts `local`, `r2` and `s3`
+   rather than the `azure` value it once named but never implemented.
+
+   Uploads are accepted as JPEG, PNG, WebP or PDF, identified by their leading
+   bytes rather than the browser's claim about them.
 
 6. **Payroll tax bands.** The PAYE bands and 10% NSSF rate in
    `accounting.routes.ts` are illustrative placeholders isolated in one function.

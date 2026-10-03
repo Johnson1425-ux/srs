@@ -17,6 +17,7 @@ import {
   Spinner,
   TableWrap,
 } from '../components/ui';
+import { DocumentsCard } from '../components/DocumentsCard';
 import type { Paginated, StaffMember } from '../lib/types';
 
 const PORTAL_ROLES = [
@@ -61,6 +62,7 @@ export function StaffPage() {
   const [newStatus, setNewStatus] = useState<string>('ON_LEAVE');
   const [statusReason, setStatusReason] = useState('');
 
+  const [documentsFor, setDocumentsFor] = useState<StaffMember | null>(null);
   const [allowancesFor, setAllowancesFor] = useState<StaffMember | null>(null);
   const [allowanceName, setAllowanceName] = useState('');
   const [allowanceAmount, setAllowanceAmount] = useState<number>(0);
@@ -249,6 +251,9 @@ export function StaffPage() {
                         <ActionMenu
                           label={`Actions for ${s.firstName} ${s.lastName}`}
                           items={[
+                            ...(can('documents:read')
+                              ? [{ label: 'Documents', onClick: () => setDocumentsFor(s) }]
+                              : []),
                             ...(can('payroll:manage')
                               ? [{ label: 'Allowances', onClick: () => setAllowancesFor(s) }]
                               : []),
@@ -284,6 +289,16 @@ export function StaffPage() {
           </>
         )}
       </Card>
+
+      {documentsFor && (
+        <Modal
+          title={`Documents — ${documentsFor.firstName} ${documentsFor.lastName}`}
+          onClose={() => setDocumentsFor(null)}
+          wide
+        >
+          <DocumentsCard subject="staff" subjectId={documentsFor.id} variant="bare" />
+        </Modal>
+      )}
 
       {statusFor && (
         <Modal

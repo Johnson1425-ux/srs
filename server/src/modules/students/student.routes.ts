@@ -6,6 +6,8 @@ import { asyncHandler, paginate, paginationSchema, skipTake, validate } from '..
 import { requirePermission, schoolIdOf } from '../../middleware/auth.js';
 import { audit } from '../../lib/audit.js';
 import { notFound } from '../../lib/errors.js';
+import { allowedImageTypes, singleFile, verifyUpload } from '../../lib/upload.js';
+import { deleteStoredFile, signedUrlFor, storeUpload } from '../../lib/storage/service.js';
 import * as service from './student.service.js';
 
 /** Module 4 — Student Management. */
@@ -307,6 +309,110 @@ studentRouter.delete(
       entityId: studentId,
       metadata: { guardianId },
     });
+    res.status(204).send();
+  }),
+);
+
+/**
+ * Replaces a student's photograph.
+ *
+ * Images only — a portrait is shown in a register, on an identity card and on a
+ * report card, none of which can render a PDF. Any previous photograph is
+ * removed once the new one is in place, so a student never occupies more than
+ * one portrait's worth of the school's quota however often it is retaken.
+ */
+studentRouter.post(
+  '/:id/photo',
+  requirePermission('students:manage'),
+  singleFile('file'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+
+    const student = await prisma.student.findFirst({
+      where: { id, schoolId },
+      select: { id: true, photoFileId: true },
+    });
+    if (!student) throw notFound('Student');
+
+    const upload = verifyUpload(req.file, allowedImageTypes);
+    const stored = await storeUpload({
+      schoolId,
+      purpose: 'STUDENT_PHOTO',
+      upload,
+      uploadedById: req.user?.id ?? null,
+    });
+
+    try {
+      await prisma.student.update({
+        where: { id },
+        data: { photoFileId: stored.id },
+      });
+    } catch (err) {
+      await deleteStoredFile(stored.id);
+      throw err;
+    }
+
+    // Only now that the student points at the new photograph is the old one
+    // discarded; the reverse order would leave a gap where neither is readable.
+    if (student.photoFileId) await deleteStoredFile(student.photoFileId);
+
+    await audit(req, {
+      action: 'student.photo_set',
+      entityType: 'Student',
+      entityId: id,
+      metadata: { filename: stored.filename, sizeBytes: stored.sizeBytes },
+    });
+
+    const signed = await signedUrlFor(stored.id, schoolId);
+    res.status(201).json({ photoFileId: stored.id, ...signed });
+  }),
+);
+
+/** A short-lived URL for the student's photograph, for an `<img>` to load. */
+studentRouter.get(
+  '/:id/photo',
+  requirePermission('students:read'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const student = await prisma.student.findFirst({
+      where: { id: req.params.id as string, schoolId },
+      select: { photoFileId: true, photoUrl: true },
+    });
+    if (!student) throw notFound('Student');
+
+    // A record imported with an externally hosted portrait has no object of
+    // ours to sign, so the stored link is the answer.
+    if (!student.photoFileId) {
+      if (!student.photoUrl) throw notFound('Photograph');
+      res.json({ url: student.photoUrl, external: true });
+      return;
+    }
+
+    const signed = await signedUrlFor(student.photoFileId, schoolId);
+    res.json({ ...signed, external: false });
+  }),
+);
+
+studentRouter.delete(
+  '/:id/photo',
+  requirePermission('students:manage'),
+  asyncHandler(async (req, res) => {
+    const schoolId = schoolIdOf(req);
+    const id = req.params.id as string;
+    const student = await prisma.student.findFirst({
+      where: { id, schoolId },
+      select: { photoFileId: true },
+    });
+    if (!student) throw notFound('Student');
+    if (!student.photoFileId) throw notFound('Photograph');
+
+    // Clearing the reference first keeps the student readable throughout; the
+    // object is then unreferenced and safe to remove.
+    await prisma.student.update({ where: { id }, data: { photoFileId: null } });
+    await deleteStoredFile(student.photoFileId);
+
+    await audit(req, { action: 'student.photo_clear', entityType: 'Student', entityId: id });
     res.status(204).send();
   }),
 );

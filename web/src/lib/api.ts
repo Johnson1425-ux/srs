@@ -116,7 +116,15 @@ async function send(path: string, options: RequestOptions, retry = true): Promis
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    // FormData goes as it is: the browser has to set its own multipart
+    // Content-Type with the boundary, and serialising it would send the string
+    // "[object FormData]" instead of the file.
+    body:
+      options.body === undefined
+        ? undefined
+        : options.body instanceof FormData
+          ? options.body
+          : JSON.stringify(options.body),
   });
 
   // An expired access token gets one transparent refresh-and-retry.
@@ -143,6 +151,29 @@ export const patch = <T,>(path: string, body?: unknown) => api<T>(path, { method
 /** A body is optional, and used where a delete must be confirmed explicitly. */
 export const del = <T,>(path: string, body?: unknown) =>
   api<T>(path, { method: 'DELETE', body });
+
+/**
+ * Uploads a file to an endpoint that takes multipart form data.
+ *
+ * `fields` carry the metadata alongside it — the server validates them from
+ * the same request, so a file never arrives without the record it belongs to.
+ */
+export async function upload<T>(
+  path: string,
+  file: File,
+  fields: Record<string, string | undefined> = {},
+): Promise<T> {
+  const form = new FormData();
+  // The file goes last so that the server has parsed every field by the time
+  // it reads the stream, which is what lets it reject one without buffering
+  // the whole upload.
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && value !== '') form.append(key, value);
+  }
+  form.append('file', file);
+
+  return api<T>(path, { method: 'POST', body: form });
+}
 
 /** Triggers a browser download for the CSV export endpoints. */
 export async function download(path: string, filename: string): Promise<void> {

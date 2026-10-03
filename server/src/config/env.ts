@@ -124,8 +124,72 @@ const schema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
-  STORAGE_DRIVER: z.enum(['local', 's3', 'azure']).default('local'),
+  /**
+   * Where uploaded binaries live.
+   *
+   * - `local` — the filesystem under STORAGE_LOCAL_PATH. Fine for development
+   *             and for a single-server installation with a real disk behind
+   *             it; useless the moment a second instance starts, because each
+   *             one would only see its own files.
+   * - `r2`    — Cloudflare R2, addressed through its S3-compatible API. The
+   *             default for a deployment: no egress charge, which matters when
+   *             every parent opening a report card pulls a photograph.
+   * - `s3`    — any other S3-compatible bucket (AWS, MinIO, Wasabi). Identical
+   *             to `r2` apart from needing S3_ENDPOINT and S3_REGION spelled
+   *             out, since they cannot be derived from an account id.
+   *
+   * `azure` was listed here before anything was implemented behind it. It is
+   * gone rather than left as a value that boots and then fails on first use.
+   */
+  STORAGE_DRIVER: z.enum(['local', 'r2', 's3']).default('local'),
   STORAGE_LOCAL_PATH: z.string().default('./uploads'),
+
+  /**
+   * The largest single upload accepted, in megabytes.
+   *
+   * A phone photograph of a birth certificate is comfortably under 5MB; the
+   * default leaves room for a multi-page scan without letting one upload fill
+   * a school's whole quota.
+   */
+  STORAGE_MAX_UPLOAD_MB: z.coerce.number().int().min(1).max(100).default(10),
+
+  /**
+   * How long a signed read URL stays valid.
+   *
+   * Long enough for a slow connection to finish fetching the object, short
+   * enough that a URL copied out of a browser's history is useless by the time
+   * anyone tries it. R2 caps this at seven days; minutes is the right order.
+   */
+  STORAGE_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(604_800).default(300),
+
+  /** The Cloudflare account that owns the bucket — it forms the R2 endpoint. */
+  R2_ACCOUNT_ID: z.string().optional(),
+  R2_BUCKET: z.string().optional(),
+  /**
+   * An R2 API token's Access Key ID and Secret Access Key, from
+   * R2 → Manage API tokens in the Cloudflare dashboard. A token scoped to
+   * *Object Read & Write* on this one bucket is all the app needs; an
+   * account-wide token hands a compromised server far more than it requires.
+   */
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+
+  /**
+   * Overrides the endpoint derived from R2_ACCOUNT_ID. Required for
+   * STORAGE_DRIVER=s3, and the seam a test or a local MinIO points at.
+   */
+  S3_ENDPOINT: optionalUrl(),
+  /** R2 ignores the region but the S3 signing algorithm requires one. */
+  S3_REGION: z.string().default('auto'),
+  /**
+   * Addresses the bucket as a path (`endpoint/bucket/key`) rather than a
+   * subdomain. R2 and AWS both accept virtual-hosted style; MinIO generally
+   * does not, so it wants this on.
+   */
+  S3_FORCE_PATH_STYLE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -168,6 +232,37 @@ export const emailConfigured =
 export const publicWebUrl = (
   env.PUBLIC_WEB_URL ?? env.CORS_ORIGIN.split(',')[0]!.trim()
 ).replace(/\/+$/, '');
+
+/**
+ * Object storage needs somewhere to put things before the app offers to.
+ *
+ * `local` is always ready — a directory is created on demand. A bucket is not:
+ * it needs an endpoint, a name and a key pair, and a half-filled set is treated
+ * as unconfigured so the failure is one clear message at boot rather than a
+ * signing error on the first parent to upload a birth certificate.
+ */
+export const storageConfigured =
+  env.STORAGE_DRIVER === 'local' ||
+  Boolean(
+    env.R2_BUCKET &&
+      env.R2_ACCESS_KEY_ID &&
+      env.R2_SECRET_ACCESS_KEY &&
+      (env.S3_ENDPOINT || env.R2_ACCOUNT_ID),
+  );
+
+/**
+ * The S3 endpoint for the configured bucket.
+ *
+ * R2 derives it from the account id and ignores the region; everything else
+ * has to be told. Returns null when storage is not configured as a bucket.
+ */
+export const s3Endpoint = (): string | null => {
+  if (env.S3_ENDPOINT) return env.S3_ENDPOINT;
+  if (env.STORAGE_DRIVER === 'r2' && env.R2_ACCOUNT_ID) {
+    return `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  }
+  return null;
+};
 
 /** A single school running its own installation — no plans, no platform admin. */
 export const isStandalone = env.DEPLOYMENT_MODE === 'standalone';

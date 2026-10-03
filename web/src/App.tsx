@@ -8,6 +8,7 @@ import type { Permission } from './lib/types';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { StudentsPage } from './pages/StudentsPage';
+import { DocumentsPage } from './pages/DocumentsPage';
 import { StudentDetailPage } from './pages/StudentDetailPage';
 import { ParentsPage } from './pages/ParentsPage';
 import { StaffPage } from './pages/StaffPage';
@@ -118,6 +119,14 @@ export function App() {
           element={
             <RequirePermission permissions={['guardians:read']}>
               <ParentsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="documents"
+          element={
+            <RequirePermission permissions={['documents:read']}>
+              <DocumentsPage />
             </RequirePermission>
           }
         />
