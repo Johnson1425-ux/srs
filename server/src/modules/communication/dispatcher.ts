@@ -97,13 +97,15 @@ async function record(
       data: {
         status: MessageStatus.SENT,
         sentAt: new Date(),
-        providerRef: result.providerRef ?? null,
+        // 💡 FIX: Safely convert the number or variable to a String
+        providerRef: result.providerRef != null ? String(result.providerRef) : null,
         cost: result.cost ?? null,
         error: null,
       },
     });
     return 'sent';
   }
+
 
   const attemptsUsed = message.attempts + 1;
   const worthRetrying = (result?.retryable ?? true) && attemptsUsed < maxAttempts;

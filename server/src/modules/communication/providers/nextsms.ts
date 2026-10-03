@@ -1,7 +1,7 @@
 import { env } from '../../../config/env.js';
 import type { SmsPayload, SmsProvider, SmsResult } from './types.js';
 
-const DEFAULT_BASE = 'https://messaging-service.co.tz/api/sms/v1';
+const DEFAULT_BASE = 'https://messaging-service.co.tz/api/sms/v2';
 
 /** Recipients per request — `to` accepts an array sharing one message body. */
 const BATCH_SIZE = 100;
