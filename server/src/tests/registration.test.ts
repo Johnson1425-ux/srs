@@ -164,6 +164,28 @@ describe('school registration behind an M-Pesa payment', () => {
     expect(body.admin.email).toBeTruthy();
   });
 
+  it('sends a payment body every field of which the C2B contract accepts', async () => {
+    gateway({ output_ResponseCode: 'INS-9' });
+
+    // The longest code the sign-up form allows, since the reference is built
+    // from it and input_TransactionReference is the field with the least room.
+    await signUp({ code: 'ABCDEFGH1234' });
+
+    const sent = JSON.parse(fetchMock.mock.calls[1]![1].body as string);
+
+    // Straight from the published C2B Single Payment parameter table. A
+    // reference carrying a hyphen, or one character over the cap, is refused
+    // by the gateway rather than by anything here, so the contract is checked
+    // on our side instead of in production.
+    expect(sent.input_Amount).toMatch(/^\d*\.?\d+$/);
+    expect(sent.input_CustomerMSISDN).toMatch(/^[0-9]{12,14}$/);
+    expect(sent.input_Currency).toMatch(/^[a-zA-Z]{1,3}$/);
+    expect(sent.input_ServiceProviderCode).toMatch(/^([0-9A-Za-z]{4,12})$/);
+    expect(sent.input_TransactionReference).toMatch(/^[0-9a-zA-Z \w+]{1,20}$/);
+    expect(sent.input_ThirdPartyConversationID).toMatch(/^[0-9a-zA-Z \w+]{1,40}$/);
+    expect(sent.input_PurchasedItemsDesc).toMatch(/^[0-9a-zA-Z \w+]{1,256}$/);
+  });
+
   it('will not let an unpaid school sign in, but says how to finish paying', async () => {
     gateway({ output_ResponseCode: 'INS-9', output_ResponseDesc: 'Request timeout' });
     const { res } = await signUp();
