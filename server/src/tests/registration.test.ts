@@ -5,7 +5,68 @@ import { app, uid } from './fixtures.js';
 import { resetSessionCache } from '../lib/mpesa/index.js';
 import { normalizeMsisdn } from '../modules/registration/registration.service.js';
 import { toPem } from '../lib/mpesa/crypto.js';
+import { stateForCode } from '../lib/mpesa/types.js';
 import { signAccessToken } from '../lib/tokens.js';
+
+/**
+ * The published response-code table, as the portal documents it.
+ *
+ * Every code here is either a wait or a refusal, and getting one wrong is
+ * expensive in opposite directions: a refusal read as a wait leaves a school in
+ * PENDING_PAYMENT being polled forever, and a wait read as a refusal fails a
+ * payment the customer is still in the middle of approving.
+ */
+describe('M-Pesa response codes', () => {
+  const PENDING = ['INS-1', 'INS-9', 'INS-10'];
+
+  const REFUSALS = [
+    'INS-6', // Transaction Failed
+    'INS-13', // Invalid Shortcode Used
+    'INS-15', // Invalid Amount Used
+    'INS-17', // Invalid Transaction Reference
+    'INS-20', // Not All Parameters Provided
+    'INS-21', // Parameter validations failed
+    'INS-26', // Invalid Currency Used
+    'INS-28', // Invalid ThirdPartyConversationID Used
+    'INS-30', // Invalid Purchased Items Description Used
+    'INS-990', // Customer Transaction Value Limit Breached
+    'INS-991', // Customer Transaction Count Limit Breached
+    'INS-992', // Multiple Limits Breached
+    'INS-993', // Organization Transaction Count Limit Breached
+    'INS-994', // Organization Transaction Value Limit Breached
+    'INS-995', // API Single Transaction Limit Breached
+    'INS-996', // API Being Used Outside Of Usage Time
+    'INS-997', // API Not Enabled
+    'INS-998', // Invalid Market
+    'INS-2006', // Insufficient balance
+    'INS-2051', // MSISDN invalid
+  ];
+
+  it('confirms only on INS-0', () => {
+    expect(stateForCode('INS-0')).toBe('confirmed');
+  });
+
+  it.each(PENDING)('waits on %s', (code) => {
+    expect(stateForCode(code)).toBe('pending');
+  });
+
+  it.each(REFUSALS)('refuses %s', (code) => {
+    expect(stateForCode(code)).toBe('failed');
+  });
+
+  // A limit breach does not come back under the limit by being asked again,
+  // so polling one is how a school waits for an answer that never arrives.
+  it('treats a breached limit as a refusal, not something to poll', () => {
+    expect(stateForCode('INS-995')).toBe('failed');
+  });
+
+  // No code at all is the one genuinely unknown case: the push may still be
+  // live on the handset, so it is waited on rather than failed.
+  it('waits when the gateway said nothing at all', () => {
+    expect(stateForCode(null)).toBe('pending');
+    expect(stateForCode(undefined)).toBe('pending');
+  });
+});
 
 /** People type their number every way there is; the gateway accepts one. */
 describe('M-Pesa number normalisation', () => {

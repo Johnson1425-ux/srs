@@ -6,12 +6,16 @@ export const MPESA_SUCCESS = 'INS-0';
  *
  * The customer has a prompt on their phone and has not answered it yet, so the
  * payment is still live and must not be marked FAILED.
+ *
+ * Every other published code is a refusal, including the limit breaches
+ * (`INS-990` to `INS-995`): a transaction over a limit does not come back under
+ * it by being asked again, and treating one as pending leaves the school
+ * sitting in PENDING_PAYMENT being polled forever instead of being told.
  */
 export const MPESA_PENDING_CODES: readonly string[] = [
   'INS-1', // internal error, retriable
   'INS-9', // request timed out — the prompt may still be answered
   'INS-10', // duplicate: a push for this reference is already in flight
-  'INS-995', // customer profile problem that resolves on their side
 ];
 
 export interface MpesaSessionResponse {
