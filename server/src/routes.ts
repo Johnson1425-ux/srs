@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { isSaas } from './config/env.js';
 import { authenticate, requireSchool } from './middleware/auth.js';
 import { authRouter } from './modules/auth/auth.routes.js';
+import { registrationRouter } from './modules/registration/registration.routes.js';
 import { schoolRouter } from './modules/schools/school.routes.js';
 import { academicsRouter } from './modules/academics/academics.routes.js';
 import { studentRouter } from './modules/students/student.routes.js';
@@ -29,6 +30,16 @@ export const apiRouter: Router = Router();
 
 // Public
 apiRouter.use('/auth', authRouter);
+
+// Self-service school sign-up and the registration fee that unlocks it. A
+// school signing up has no account yet, so like the routes below it is
+// deliberately mounted above `authenticate`. A standalone installation is one
+// school that already owns its copy, so there is nothing to sell it and the
+// routes simply do not exist.
+if (isSaas) {
+  apiRouter.use('/registration', registrationRouter);
+}
+
 // Results a parent opens from a link in a text message. The token in the URL
 // is the credential, so this is deliberately mounted above `authenticate`.
 apiRouter.use('/public/results', publicResultRouter);

@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
-import { ApiError, post } from '../lib/api';
+import { ApiError, errorDetail, fieldErrors, post } from '../lib/api';
 import { ErrorNote, Field } from '../components/ui';
 
 interface LoginForm {
@@ -36,8 +36,17 @@ export function LoginPage() {
       navigate(location.state?.from ?? '/', { replace: true });
     } catch (err) {
       // The API asks for a school code when one address exists at two schools.
-      if (err instanceof ApiError && err.details?.some((d) => d.field === 'schoolCode')) {
+      if (fieldErrors(err).some((d) => d.field === 'schoolCode')) {
         setNeedsSchoolCode(true);
+      }
+      // A school that signed up and never paid: send its administrator back to
+      // the payment they abandoned rather than leaving them at a dead end.
+      if (err instanceof ApiError && err.status === 402) {
+        const detail = errorDetail<{ claimToken?: string }>(err);
+        if (detail?.claimToken) {
+          navigate(`/register/${detail.claimToken}`, { replace: true });
+          return;
+        }
       }
       setError(err);
     }
@@ -134,6 +143,12 @@ export function LoginPage() {
                 >
                   Forgot your password?
                 </button>
+                <p className="text-center text-sm text-slate-500">
+                  New school?{' '}
+                  <Link to="/register" className="text-brand-700 hover:underline">
+                    Register and pay with M-Pesa
+                  </Link>
+                </p>
               </>
             ) : (
               <>

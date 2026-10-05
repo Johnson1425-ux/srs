@@ -6,6 +6,7 @@ import { useAuth } from './lib/auth';
 import type { Permission } from './lib/types';
 
 import { LoginPage } from './pages/LoginPage';
+import { RegisterPage } from './pages/RegisterPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { StudentsPage } from './pages/StudentsPage';
 import { DocumentsPage } from './pages/DocumentsPage';
@@ -82,6 +83,11 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Self-service school sign-up and the M-Pesa payment that opens the
+          account. Outside the application shell: there is no session yet, and
+          until the fee is paid there is nothing to show inside it. */}
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/register/:claimToken" element={<RegisterPage />} />
       {/* Opened by a parent from a link in a text message: no session, and
           deliberately outside the application shell. */}
       <Route path="/r/:token" element={<PublicResultPage />} />

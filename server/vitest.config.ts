@@ -15,6 +15,9 @@ export default defineConfig({
     globals: false,
     include: ['src/**/*.test.ts'],
     globalSetup: ['./src/tests/globalSetup.ts'],
+    // Puts M-Pesa credentials in place before any suite imports the
+    // environment, which is parsed once at import.
+    setupFiles: ['./src/tests/mpesaEnv.ts'],
     // Shared database: run suites sequentially so fixtures don't collide.
     fileParallelism: false,
     testTimeout: 30_000,

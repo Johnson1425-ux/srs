@@ -357,11 +357,55 @@ DEPLOYMENT_MODE=standalone
 | Subscription plans and student caps | enforced | not applied |
 | Subscription card in Settings | shown | hidden |
 | First school created by | `POST /platform/schools` | `npm run bootstrap` |
+| Self-service sign-up (`/registration`) | mounted | **not mounted** — one school that already owns its copy has nothing to buy |
 
 The data model is identical either way — a standalone install is simply a
 tenant of one, so a school can be migrated between the two without a schema
 change. Only the behaviours above differ, which is why this is a flag rather
 than a fork.
+
+### Self-service registration, paid with M-Pesa
+
+A school can also sign itself up, and a school that has signed itself up cannot
+reach the application until it has paid. SaaS deployments only — a standalone
+installation is one school that already owns its copy.
+
+| | |
+| --- | --- |
+| `GET /api/v1/registration/plans` | what the plans cost and whether M-Pesa is configured |
+| `POST /api/v1/registration` | creates the school on `PENDING_PAYMENT` with its first administrator, and pushes a PIN prompt to the given phone. Answers **202** with a `claimToken` and **no tokens** |
+| `GET /api/v1/registration/:claimToken` | the sign-up page's status poll. Reconciles against M-Pesa while the payment is open |
+| `POST /api/v1/registration/:claimToken/retry` | pushes the prompt again after a refusal, without creating a second school |
+| `POST /api/v1/registration/mpesa/callback` | the gateway's notification, authenticated by `X-Callback-Secret` |
+
+Until the payment is confirmed, the school's status is `PENDING_PAYMENT` and:
+
+- login answers **402 `PAYMENT_REQUIRED`**, with the `claimToken` attached so an
+  abandoned payment can be finished rather than being a dead end;
+- `authenticate` refuses every request the same way, so a token minted before
+  payment buys nothing;
+- a super admin is unaffected, exactly as with a suspended school.
+
+Confirmation sets the school `ACTIVE`, records `registrationPaidAt`, and moves
+the plan's student cap and storage quota in with it.
+
+Tanzania runs on the M-Pesa **OpenAPI** (`openapiportal.m-pesa.com`), not
+Safaricom's Daraja: the API key is RSA-encrypted with the market's published
+public key to open a session, and that session id is encrypted the same way as
+the bearer for every call after it. Credentials come from the environment only
+and `MPESA_ENV` defaults to `sandbox`, so a half-configured deployment cannot
+take real money off a real phone. See the `MPESA_*` block in
+`server/.env.example`.
+
+The status poll reconciles with `queryTransactionStatus` on every request while
+a payment is open, so **the sandbox works from a laptop** — the gateway never
+has to reach a callback URL. The callback is an optimisation on top.
+
+Registration is priced on the server, per plan
+(`MPESA_REGISTRATION_FEE_BASIC` and friends), never from the request body. The
+free `TRIAL` plan is not offered on sign-up at all: a free option on a public
+endpoint is a way straight past the gate, so a trial stays something an
+operator grants.
 
 ### Setting up a standalone installation
 

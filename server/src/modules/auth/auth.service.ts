@@ -1,7 +1,14 @@
-import { Role, UserStatus } from '@prisma/client';
+import { PaymentStatus, Role, SchoolStatus, UserStatus } from '@prisma/client';
 import { prisma } from '../../db/prisma.js';
 import { env } from '../../config/env.js';
-import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors.js';
+import {
+  badRequest,
+  conflict,
+  forbidden,
+  notFound,
+  paymentRequired,
+  unauthorized,
+} from '../../lib/errors.js';
 import {
   hashPassword,
   hashToken,
@@ -111,13 +118,26 @@ export async function login(
     throw forbidden(`Account is ${user.status.toLowerCase()}`);
   }
 
-  if (user.schoolId) {
+  if (user.schoolId && user.role !== Role.SUPER_ADMIN) {
     const school = await prisma.school.findUnique({
       where: { id: user.schoolId },
       select: { status: true },
     });
-    if (school?.status === 'SUSPENDED' && user.role !== Role.SUPER_ADMIN) {
+    if (school?.status === SchoolStatus.SUSPENDED) {
       throw forbidden('This school account is suspended. Contact your provider.');
+    }
+    if (school?.status === SchoolStatus.PENDING_PAYMENT) {
+      // Refused, but with the way out attached: the administrator of a school
+      // whose payment was abandoned would otherwise have no route back to it.
+      const open = await prisma.registrationPayment.findFirst({
+        where: { schoolId: user.schoolId, status: { not: PaymentStatus.CONFIRMED } },
+        orderBy: { createdAt: 'desc' },
+        select: { claimToken: true },
+      });
+      throw paymentRequired(
+        'Registration for this school has not been paid for yet. Complete the M-Pesa payment to sign in.',
+        open ? { claimToken: open.claimToken } : undefined,
+      );
     }
   }
 

@@ -22,6 +22,15 @@ export const unauthorized = (message = 'Authentication required') =>
 export const forbidden = (message = 'You do not have permission to perform this action') =>
   new AppError(403, 'FORBIDDEN', message);
 
+/**
+ * The caller is who they say they are, but the account has not been paid for.
+ *
+ * Distinct from `forbidden`: there is something the caller can do about it, and
+ * `details` carries what they need to do it.
+ */
+export const paymentRequired = (message: string, details?: unknown) =>
+  new AppError(402, 'PAYMENT_REQUIRED', message, details);
+
 export const notFound = (resource = 'Resource') =>
   new AppError(404, 'NOT_FOUND', `${resource} not found`);
 

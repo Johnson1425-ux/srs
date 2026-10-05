@@ -36,18 +36,46 @@ export const schoolContext = {
   },
 };
 
+export interface FieldError {
+  field: string;
+  message: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
-  readonly details?: Array<{ field: string; message: string }>;
+  /**
+   * Whatever the endpoint attached. Validation failures send a list of field
+   * errors; others send an object of their own (a 402 carries the token that
+   * leads back to an unpaid registration), so this stays `unknown` and callers
+   * narrow it with the helpers below.
+   */
+  readonly details?: unknown;
 
-  constructor(status: number, code: string, message: string, details?: ApiError['details']) {
+  constructor(status: number, code: string, message: string, details?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.details = details;
   }
+}
+
+/** The per-field messages from a validation failure, or an empty list. */
+export function fieldErrors(error: unknown): FieldError[] {
+  if (!(error instanceof ApiError) || !Array.isArray(error.details)) return [];
+  return error.details.filter(
+    (d): d is FieldError =>
+      !!d && typeof d === 'object' && typeof (d as FieldError).field === 'string',
+  );
+}
+
+/** A detail object an endpoint attached, e.g. `{ claimToken }` on a 402. */
+export function errorDetail<T extends object>(error: unknown): T | null {
+  if (!(error instanceof ApiError)) return null;
+  const { details } = error;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  return details as T;
 }
 
 interface RequestOptions extends Omit<RequestInit, 'body'> {
