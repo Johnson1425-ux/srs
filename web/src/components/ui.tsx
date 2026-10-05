@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { fieldErrors } from '../lib/api';
 import { statusTone, titleCase } from '../lib/format';
 
 export function PageHeader({
@@ -107,15 +108,12 @@ export function EmptyState({ title, hint }: { title: string; hint?: string }) {
 
 export function ErrorNote({ error }: { error: unknown }) {
   const message = error instanceof Error ? error.message : 'Something went wrong';
-  const details =
-    error && typeof error === 'object' && 'details' in error
-      ? (error as { details?: Array<{ field: string; message: string }> }).details
-      : undefined;
+  const details = fieldErrors(error);
 
   return (
     <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
       <p className="font-medium">{message}</p>
-      {details && details.length > 0 && (
+      {details.length > 0 && (
         <ul className="mt-1 list-inside list-disc text-xs">
           {details.map((d) => (
             <li key={`${d.field}-${d.message}`}>

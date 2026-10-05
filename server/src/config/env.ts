@@ -125,6 +125,54 @@ const schema = z.object({
     .transform((v) => v === 'true'),
 
   /**
+   * Vodacom M-Pesa, used for the fee a school pays to register for the
+   * application itself (not for a family paying a student's fees, which is
+   * still recorded by hand).
+   *
+   * Tanzania runs on the M-Pesa *OpenAPI* rather than Safaricom's Daraja, so
+   * the credentials are an API key and the market's published RSA public key:
+   * the key is encrypted with it to fetch a session, and the session id is
+   * encrypted with it again as the bearer for everything after that.
+   *
+   * `sandbox` is the default so a misconfigured deployment cannot take real
+   * money from a real phone.
+   */
+  MPESA_ENV: z.enum(['sandbox', 'production']).default('sandbox'),
+  /** The market path segment. Tanzania is `vodacomTZN`. */
+  MPESA_MARKET: z.string().default('vodacomTZN'),
+  MPESA_API_KEY: z.string().optional(),
+  /** Base64 DER, exactly as the OpenAPI portal shows it, with or without the PEM armour. */
+  MPESA_PUBLIC_KEY: z.string().optional(),
+  /** The till the money lands in — the portal calls it the service provider code. */
+  MPESA_SERVICE_PROVIDER_CODE: z.string().optional(),
+  /** Overrides the endpoint derived from MPESA_ENV — for an outbound proxy, or a stub in testing. */
+  MPESA_BASE_URL: optionalUrl(),
+  /**
+   * Shared secret the gateway callback must present. The callback arrives
+   * unauthenticated by nature, so without this it is refused outright.
+   */
+  MPESA_CALLBACK_SECRET: z.string().optional(),
+  /**
+   * How long to wait on the payment push before answering the sign-up request.
+   *
+   * The customer has to read a prompt and type a PIN, which takes longer than
+   * anyone will hold a browser request open for. The push is left to finish in
+   * the background and the result is reconciled on the next status poll.
+   */
+  MPESA_PUSH_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(8000),
+
+  /**
+   * What registering costs, in whole shillings, per plan.
+   *
+   * Priced here rather than in the request body: the amount a school is
+   * charged can never come from the browser. A trial costs nothing and so
+   * passes the gate without a payment at all.
+   */
+  MPESA_REGISTRATION_FEE_BASIC: z.coerce.number().int().min(0).default(150_000),
+  MPESA_REGISTRATION_FEE_STANDARD: z.coerce.number().int().min(0).default(450_000),
+  MPESA_REGISTRATION_FEE_PREMIUM: z.coerce.number().int().min(0).default(950_000),
+
+  /**
    * Where uploaded binaries live.
    *
    * - `local` — the filesystem under STORAGE_LOCAL_PATH. Fine for development
@@ -262,6 +310,44 @@ export const s3Endpoint = (): string | null => {
     return `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
   }
   return null;
+};
+
+/**
+ * M-Pesa needs a key pair and a till before the app offers to take money.
+ *
+ * A half-filled set is treated as unconfigured, matching `smsConfigured` and
+ * `storageConfigured`: sign-up then records the school as unpaid and says so,
+ * rather than failing while signing a request nobody can honour.
+ */
+export const mpesaConfigured = Boolean(
+  env.MPESA_API_KEY && env.MPESA_PUBLIC_KEY && env.MPESA_SERVICE_PROVIDER_CODE,
+);
+
+/** The gateway root for the configured market, with a trailing slash. */
+export const mpesaBaseUrl = (): string => {
+  const base =
+    env.MPESA_BASE_URL ??
+    `https://openapi.m-pesa.com/${env.MPESA_ENV}/ipg/v2/${env.MPESA_MARKET}`;
+  return base.replace(/\/+$/, '') + '/';
+};
+
+/**
+ * What the given plan costs to register, in whole shillings.
+ *
+ * TRIAL is zero: the trial is how a school looks at the app before paying for
+ * it, so charging for it would leave nothing to try.
+ */
+export const registrationFee = (plan: 'TRIAL' | 'BASIC' | 'STANDARD' | 'PREMIUM'): number => {
+  switch (plan) {
+    case 'BASIC':
+      return env.MPESA_REGISTRATION_FEE_BASIC;
+    case 'STANDARD':
+      return env.MPESA_REGISTRATION_FEE_STANDARD;
+    case 'PREMIUM':
+      return env.MPESA_REGISTRATION_FEE_PREMIUM;
+    case 'TRIAL':
+      return 0;
+  }
 };
 
 /** A single school running its own installation — no plans, no platform admin. */

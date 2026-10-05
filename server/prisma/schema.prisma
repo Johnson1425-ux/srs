@@ -50,6 +50,9 @@ enum SchoolStatus {
   SUSPENDED
   TRIAL
   CANCELLED
+  // Signed itself up and has not paid yet. Nobody but platform staff can
+  // reach the application until a registration payment is confirmed.
+  PENDING_PAYMENT
 }
 
 enum SubscriptionPlan {
@@ -223,6 +226,9 @@ model School {
   planEndsAt      DateTime?
   maxStudents     Int              @default(500)
   storageQuotaMb  Int              @default(1024)
+  /// When the registration fee was confirmed. Null on a school that has never
+  /// paid — including every school an operator created directly.
+  registrationPaidAt DateTime?
 
   // Configurable behaviour (PRD: position ranking is optional/configurable)
   rankingEnabled   Boolean @default(true)
@@ -268,7 +274,49 @@ model School {
   supportTickets   SupportTicket[]
   resultLinks      ResultLink[]
   storedFiles      StoredFile[]
+  registrationPayments RegistrationPayment[]
 
+  @@index([status])
+}
+
+/// What a school paid to register for the application itself.
+///
+/// Deliberately separate from `Payment`, which is a family paying a student's
+/// fees to a school. This is the school paying us, so it has no student, no
+/// receipt number and no allocations — only a plan and a gateway transaction.
+model RegistrationPayment {
+  id       String @id @default(cuid())
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  plan     SubscriptionPlan
+  amount   Decimal @db.Decimal(14, 2)
+  currency String  @default("TZS")
+
+  provider MobileMoneyProvider @default(MPESA)
+  /// The paying phone number, in the gateway's format (255XXXXXXXXX).
+  msisdn   String
+  status   PaymentStatus @default(PENDING)
+
+  /// Our own idempotency key, sent as input_ThirdPartyConversationID. The
+  /// gateway echoes it back, which is what lets a callback be matched to a
+  /// request we actually made.
+  reference String @unique
+  /// Opaque credential the unauthenticated sign-up page polls with. It is the
+  /// only way back to a payment before the school can log in, so it is a
+  /// secret and never derived from the school's details.
+  claimToken String @unique
+
+  conversationId    String?
+  transactionId     String?
+  resultCode        String?
+  resultDescription String?
+
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([schoolId, createdAt])
   @@index([status])
 }
 

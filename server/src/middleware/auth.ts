@@ -1,7 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { Role, UserStatus } from '@prisma/client';
+import { Role, SchoolStatus, UserStatus } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
-import { forbidden, unauthorized } from '../lib/errors.js';
+import { forbidden, paymentRequired, unauthorized } from '../lib/errors.js';
 import { verifyAccessToken } from '../lib/tokens.js';
 import { type Permission, permissionsForRole, roleHasPermission } from '../lib/permissions.js';
 
@@ -70,6 +70,16 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
     // A suspended tenant locks out everyone except platform staff.
     if (user.role !== Role.SUPER_ADMIN && user.school && user.school.status === 'SUSPENDED') {
       throw forbidden('This school account is suspended. Contact your provider.');
+    }
+    // An unpaid tenant likewise. Checked here and not only at login, so a token
+    // minted before the gate existed — or one issued and then not paid for —
+    // buys nothing.
+    if (
+      user.role !== Role.SUPER_ADMIN &&
+      user.school &&
+      user.school.status === SchoolStatus.PENDING_PAYMENT
+    ) {
+      throw paymentRequired('This school has not completed its registration payment.');
     }
 
     req.user = {
