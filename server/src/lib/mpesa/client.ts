@@ -1,6 +1,7 @@
 import { env, mpesaBaseUrl, mpesaConfigured } from '../../config/env.js';
 import { encryptForBearer } from './crypto.js';
 import {
+  MPESA_PENDING_CODES,
   MPESA_SUCCESS,
   stateForCode,
   type C2bPaymentRequest,
@@ -48,6 +49,34 @@ function requireConfig(): { apiKey: string; publicKey: string; providerCode: str
   };
 }
 
+/**
+ * Records any answer that was not a success, in the gateway's own words.
+ *
+ * Without this such an answer reaches the customer as a sentence on the
+ * sign-up page and is never written down, so a report of "it says X" cannot be
+ * tied to the call that produced it — and `getSession` being rejected looks
+ * exactly like `c2bPayment` being rejected. Only the path, the status and the
+ * gateway's own code and wording are logged: the request body carries the
+ * customer's phone number, which has no business in a log file.
+ *
+ * A pending code is said to be pending rather than reported as a failure,
+ * since a customer who has not yet typed their PIN is the normal case.
+ */
+function logUnsuccessfulResponse(path: string, status: number, parsed: unknown): void {
+  const body = (parsed ?? {}) as { output_ResponseCode?: string; output_ResponseDesc?: string };
+  const code = body.output_ResponseCode;
+
+  // No code at all and a clean status means there is nothing to report.
+  if (code === MPESA_SUCCESS || (code === undefined && status < 400)) return;
+
+  const outcome = code !== undefined && MPESA_PENDING_CODES.includes(code) ? 'pending' : 'rejected';
+
+  console.error(
+    `[mpesa] ${path} ${outcome}: HTTP ${status}, code ${code ?? 'none'}, ` +
+      `desc ${body.output_ResponseDesc ?? 'none'}`,
+  );
+}
+
 async function callGateway<T>(
   path: string,
   init: { method: 'GET' | 'POST'; bearer: string; body?: unknown; timeoutMs: number },
@@ -81,6 +110,8 @@ async function callGateway<T>(
     // caller decides. Only an authentication failure is handled here, because
     // it means the cached session is stale.
     if (res.status === 401) resetSessionCache();
+
+    logUnsuccessfulResponse(path, res.status, parsed);
 
     return parsed as T;
   } catch (err) {
