@@ -79,6 +79,21 @@ export function normalizeMsisdn(input: string): string {
   });
 }
 
+/**
+ * A payment reference the C2B contract will actually accept.
+ *
+ * `input_TransactionReference` is capped at 20 characters and its pattern
+ * (`^[0-9a-zA-Z \w+]{1,20}$`) admits no punctuation, so the readable
+ * `REG-<code>-<token>` shape cannot be sent: the hyphens fail it outright, and
+ * a 12-character school code overruns the cap on its own. Enough of the school
+ * code is kept to recognise a row in the gateway's statement, and the random
+ * tail is what makes it unique.
+ */
+function paymentReference(code: string): string {
+  const prefix = code.replace(/[^0-9a-zA-Z]/g, '').slice(0, 4).toUpperCase();
+  return `REG${prefix}${randomToken(5)}`;
+}
+
 /** What the sign-up page is told. Never includes a gateway credential. */
 export interface RegistrationView {
   claimToken: string;
@@ -331,7 +346,7 @@ export async function registerSchool(input: RegisterSchoolInput): Promise<Regist
         amount: money(amount),
         currency: 'TZS',
         msisdn,
-        reference: `REG-${code}-${randomToken(6)}`,
+        reference: paymentReference(code),
         claimToken: randomToken(),
       },
     });
@@ -400,7 +415,7 @@ export async function retryRegistrationPayment(claimToken: string): Promise<Regi
       // A new reference, because the gateway refuses a repeat of one it has
       // already seen. It still carries the school code, which is what makes it
       // readable on a statement.
-      reference: `REG-${school?.code ?? 'SCHOOL'}-${randomToken(6)}`,
+      reference: paymentReference(school?.code ?? 'SCHOOL'),
       resultCode: null,
       resultDescription: null,
     },
