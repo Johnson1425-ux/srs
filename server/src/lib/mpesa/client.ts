@@ -109,7 +109,15 @@ async function callGateway<T>(
     // than the HTTP status does, so the body is handed back either way and the
     // caller decides. Only an authentication failure is handled here, because
     // it means the cached session is stale.
-    if (res.status === 401) resetSessionCache();
+    //
+    // A 401 alone does not mean that: the published table answers INS-6,
+    // "Transaction Failed", with 401, so a customer declining a prompt would
+    // throw away a perfectly good session. A 401 carrying a response code is
+    // that documented case; one carrying none is the gateway rejecting the
+    // credential itself.
+    if (res.status === 401 && (parsed as { output_ResponseCode?: string }).output_ResponseCode === undefined) {
+      resetSessionCache();
+    }
 
     logUnsuccessfulResponse(path, res.status, parsed);
 
