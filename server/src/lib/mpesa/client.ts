@@ -241,6 +241,18 @@ export async function queryStatus(reference: string): Promise<MpesaOutcome> {
   const description = body.output_ResponseDesc ?? body.output_ResponseTransactionStatus ?? null;
   const transactionId = body.output_TransactionID ?? null;
 
+  // A query that succeeds still says nothing in the log, because only refusals
+  // are recorded — and a transaction status we do not recognise is read as
+  // "still waiting", which looks exactly like a customer who has not typed
+  // their PIN. The wording below is the only way to tell those apart.
+  if (code === MPESA_SUCCESS) {
+    console.info(
+      `[mpesa] queryTransactionStatus/ answered: status ${
+        body.output_ResponseTransactionStatus ?? 'none'
+      }, transaction ${transactionId ?? 'none'}`,
+    );
+  }
+
   // The query itself can succeed while reporting a payment that has not
   // settled, so the transaction status decides and the response code only says
   // whether the question was answered.
