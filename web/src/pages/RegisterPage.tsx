@@ -5,6 +5,12 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { get, post } from '../lib/api';
 import { money } from '../lib/format';
 import { ErrorNote, Field, Spinner } from '../components/ui';
+import {
+  type PaymentStep,
+  PaymentSteps,
+  WaitMeter,
+  useElapsedSeconds,
+} from '../components/PaymentSteps';
 
 type Plan = 'BASIC' | 'STANDARD' | 'PREMIUM';
 type Provider = 'MPESA' | 'AIRTEL_MONEY';
@@ -65,6 +71,72 @@ interface RegisterForm {
   adminFirstName: string;
   adminLastName: string;
   adminEmail: string;
+}
+
+/**
+ * How long a prompt is normally answered within, per network.
+ *
+ * M-Pesa's push is held open server-side for 110 seconds, and Airtel settles
+ * through the status poll a little sooner. Past this the wait is not an error —
+ * the prompt may still be sitting unread on the handset — but it is long
+ * enough that offering to send it again is more use than another spinner.
+ */
+const PROMPT_WINDOW_SECONDS: Record<Provider, number> = {
+  MPESA: 110,
+  AIRTEL_MONEY: 90,
+};
+
+/**
+ * The payment as a list of steps.
+ *
+ * Every state here is read off the payment record. The two steps after
+ * approval cannot be observed separately — the gateway tells us the payment
+ * settled and the school opened in the same breath — so they settle together
+ * rather than being animated apart on a guess.
+ */
+function paymentSteps(reg: Registration, sending: boolean): PaymentStep[] {
+  const confirmed = reg.status === 'CONFIRMED';
+  const failed = reg.status === 'FAILED' || reg.status === 'REVERSED';
+
+  const approving: PaymentStep['state'] = confirmed
+    ? 'done'
+    : failed
+      ? 'failed'
+      : sending
+        ? 'upcoming'
+        : 'active';
+
+  return [
+    {
+      key: 'request',
+      label: sending
+        ? `Sending the ${reg.providerLabel} prompt again`
+        : `Payment request sent to ${reg.providerLabel}`,
+      detail: sending ? undefined : `${money(reg.amount, reg.currency)} · ${reg.msisdn}`,
+      state: sending ? 'active' : 'done',
+    },
+    {
+      key: 'approve',
+      label: confirmed
+        ? 'Approved on your phone'
+        : failed
+          ? 'The prompt was not approved'
+          : `Enter your ${reg.providerLabel} PIN on ${reg.msisdn}`,
+      state: approving,
+    },
+    {
+      key: 'settle',
+      label: confirmed
+        ? `${reg.providerLabel} confirmed the payment`
+        : `${reg.providerLabel} confirms the payment`,
+      state: confirmed ? 'done' : 'upcoming',
+    },
+    {
+      key: 'open',
+      label: confirmed ? `${reg.school.name} is open` : "Your school's account opens",
+      state: confirmed ? 'done' : 'upcoming',
+    },
+  ];
 }
 
 function Shell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
@@ -290,9 +362,34 @@ function SignUpForm() {
               ? `Pay ${money(chosen.amount, chosen.currency)} with ${providerLabel}`
               : 'Continue'}
         </button>
-        <p className="text-center text-xs text-slate-400">
-          Your school's account opens as soon as the payment is confirmed.
-        </p>
+        {isSubmitting ? (
+          /*
+           * The same list the next screen opens on, so the wait does not start
+           * over when the prompt is on its way. Only the step actually being
+           * waited on is marked active: the rest are what is coming.
+           */
+          <div className="panel-enter rounded-lg border border-slate-200 bg-slate-50 px-4 py-4">
+            <PaymentSteps
+              steps={[
+                {
+                  key: 'request',
+                  label: `Sending the payment request to ${providerLabel}`,
+                  state: 'active',
+                },
+                {
+                  key: 'approve',
+                  label: `Enter your ${providerLabel} PIN on the phone you gave`,
+                  state: 'upcoming',
+                },
+                { key: 'open', label: "Your school's account opens", state: 'upcoming' },
+              ]}
+            />
+          </div>
+        ) : (
+          <p className="text-center text-xs text-slate-400">
+            Your school's account opens as soon as the payment is confirmed.
+          </p>
+        )}
       </form>
     </Shell>
   );
@@ -302,10 +399,12 @@ function SignUpForm() {
  * The "check your phone" screen.
  *
  * Polls while the payment is open: the server reconciles with the gateway on
- * each poll, so this settles even where it cannot reach a callback URL.
+ * each poll, so this settles even where it cannot reach a callback URL. What
+ * the school sees is the step list, which redraws itself as the record moves.
  */
 function PaymentStatus({ claimToken }: { claimToken: string }) {
   const [error, setError] = useState<unknown>(null);
+  const [waitingSince, setWaitingSince] = useState(() => waitStart(claimToken));
 
   const status = useQuery({
     queryKey: ['registration', claimToken],
@@ -324,10 +423,16 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
     mutationFn: () => post<Registration>(`/registration/${claimToken}/retry`),
     onSuccess: () => {
       setError(null);
+      // A retry is a genuinely new prompt, so the clock under it starts again.
+      setWaitingSince(restartWait(claimToken));
       void status.refetch();
     },
     onError: setError,
   });
+
+  const reg = status.data;
+  const pending = reg?.status === 'PENDING';
+  const seconds = useElapsedSeconds(waitingSince, pending === true && !retry.isPending);
 
   if (status.isLoading) {
     return (
@@ -337,7 +442,7 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
     );
   }
 
-  if (status.error || !status.data) {
+  if (status.error || !reg) {
     return (
       <Shell title="Registration" subtitle="We could not find that registration">
         <ErrorNote error={status.error ?? new Error('Registration not found')} />
@@ -345,24 +450,30 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
     );
   }
 
-  const reg = status.data;
+  const confirmed = reg.status === 'CONFIRMED';
+  const failed = reg.status === 'FAILED' || reg.status === 'REVERSED';
+  const steps = paymentSteps(reg, retry.isPending);
+  const overdue = pending && seconds > (PROMPT_WINDOW_SECONDS[reg.provider] ?? 110);
 
-  if (reg.status === 'CONFIRMED') {
+  if (confirmed) {
     return (
       <Shell title="Payment confirmed" subtitle={`${reg.school.name} is open for business`}>
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-          We received {money(reg.amount, reg.currency)} for the {reg.plan} plan. Sign in as{' '}
-          <span className="font-medium">{reg.administratorEmail}</span> with the temporary password
-          you were given, and you will be asked to change it.
+        <div className="panel-enter">
+          <div className="mb-5">
+            <PaymentSteps steps={steps} />
+          </div>
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+            We received {money(reg.amount, reg.currency)} for the {reg.plan} plan. Sign in as{' '}
+            <span className="font-medium">{reg.administratorEmail}</span> with the temporary
+            password you were given, and you will be asked to change it.
+          </div>
+          <Link to="/login" className="btn-primary mt-4 block w-full text-center">
+            Sign in
+          </Link>
         </div>
-        <Link to="/login" className="btn-primary mt-4 block w-full text-center">
-          Sign in
-        </Link>
       </Shell>
     );
   }
-
-  const failed = reg.status === 'FAILED';
 
   return (
     <Shell
@@ -375,15 +486,42 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
         </div>
       )}
 
+      {/* Polite, because this changes under a reader who is looking at their phone. */}
+      <div aria-live="polite">
+        <PaymentSteps steps={steps} />
+
+        {pending && !retry.isPending && (
+          /* Aligned under the step labels rather than the card, so it reads as
+             belonging to the step being waited on. */
+          <div className="pl-[34px]">
+            <WaitMeter
+              seconds={seconds}
+              overdue={overdue}
+              label={`Waiting for ${reg.providerLabel}`}
+            />
+          </div>
+        )}
+      </div>
+
       <div
-        className={
+        className={`mt-5 rounded-lg border px-4 py-3 text-sm transition-colors duration-500 ${
           failed
-            ? 'rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800'
-            : 'rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-slate-700'
-        }
+            ? 'border-rose-200 bg-rose-50 text-rose-800'
+            : overdue
+              ? 'border-amber-200 bg-amber-50 text-amber-800'
+              : 'border-brand-200 bg-brand-50 text-slate-700'
+        }`}
       >
         {failed ? (
           <p>{reg.message ?? `${reg.providerLabel} did not complete the payment.`}</p>
+        ) : overdue ? (
+          <>
+            <p className="font-medium">The prompt is taking longer than usual.</p>
+            <p className="mt-1">
+              It may still be sitting unread on {reg.msisdn}. If it never arrived, send the request
+              again — your school is only ever opened once.
+            </p>
+          </>
         ) : (
           <>
             <p className="font-medium">
@@ -393,20 +531,14 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
               This page updates itself the moment the payment goes through. Until then your school
               cannot be signed in to.
             </p>
-            {reg.message && <p className="mt-2 text-xs text-slate-500">{reg.message}</p>}
           </>
         )}
+        {reg.message && !failed && <p className="mt-2 text-xs opacity-80">{reg.message}</p>}
       </div>
-
-      {!failed && (
-        <div className="mt-4 flex items-center gap-2 text-sm text-slate-500">
-          <Spinner label={`Waiting for ${reg.providerLabel}…`} />
-        </div>
-      )}
 
       <button
         type="button"
-        className="btn-primary mt-4 w-full"
+        className={`mt-4 w-full ${failed || overdue ? 'btn-primary' : 'btn-secondary'}`}
         onClick={() => retry.mutate()}
         disabled={retry.isPending}
       >
@@ -418,6 +550,42 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
       </p>
     </Shell>
   );
+}
+
+/**
+ * When the prompt the school is waiting on was sent.
+ *
+ * The payment row does not record the moment of the push, and the clock on
+ * this screen has to survive a reload: a school that comes back to the tab
+ * after two minutes must not be told the prompt is seconds old and promised it
+ * is on its way. Kept per claim token for the life of the tab.
+ */
+function waitStart(claimToken: string): number {
+  const key = waitKey(claimToken);
+  try {
+    const stored = Number(window.sessionStorage.getItem(key));
+    if (Number.isFinite(stored) && stored > 0) return stored;
+    const now = Date.now();
+    window.sessionStorage.setItem(key, String(now));
+    return now;
+  } catch {
+    // Private browsing, or storage the browser will not hand out. The clock is
+    // decoration over a screen that polls regardless.
+    return Date.now();
+  }
+}
+
+function restartWait(claimToken: string): number {
+  try {
+    window.sessionStorage.removeItem(waitKey(claimToken));
+  } catch {
+    // Nothing to clear.
+  }
+  return waitStart(claimToken);
+}
+
+function waitKey(claimToken: string): string {
+  return `registration-wait:${claimToken}`;
 }
 
 export function RegisterPage() {
