@@ -162,6 +162,15 @@ const schema = z.object({
   MPESA_PUSH_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(8000),
 
   /**
+   * How long an unpaid registration is kept before it is given up on.
+   *
+   * A sign-up holds its school code against everyone else, so one abandoned
+   * attempt must not cost a school the name it wanted for good. Long enough
+   * that somebody can top up their M-Pesa account and come back to it.
+   */
+  REGISTRATION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+
+  /**
    * What registering costs, in whole shillings, per plan.
    *
    * Priced here rather than in the request body: the amount a school is

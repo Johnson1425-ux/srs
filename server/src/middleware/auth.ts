@@ -81,6 +81,16 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
     ) {
       throw paymentRequired('This school has not completed its registration payment.');
     }
+    // A cancelled tenant is closed for good. Nothing read this status before an
+    // unpaid registration could expire into it, which would have left a
+    // cancelled school as the one kind nothing turned away.
+    if (
+      user.role !== Role.SUPER_ADMIN &&
+      user.school &&
+      user.school.status === SchoolStatus.CANCELLED
+    ) {
+      throw forbidden('This school account has been closed. Contact your provider.');
+    }
 
     req.user = {
       id: user.id,

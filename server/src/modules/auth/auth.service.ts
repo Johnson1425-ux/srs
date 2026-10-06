@@ -19,6 +19,7 @@ import {
   verifyRefreshToken,
 } from '../../lib/tokens.js';
 import { permissionsForRole } from '../../lib/permissions.js';
+import { sendPasswordReset } from './auth.notify.js';
 
 export interface LoginContext {
   userAgent?: string;
@@ -125,6 +126,9 @@ export async function login(
     });
     if (school?.status === SchoolStatus.SUSPENDED) {
       throw forbidden('This school account is suspended. Contact your provider.');
+    }
+    if (school?.status === SchoolStatus.CANCELLED) {
+      throw forbidden('This school account has been closed. Contact your provider.');
     }
     if (school?.status === SchoolStatus.PENDING_PAYMENT) {
       // Refused, but with the way out attached: the administrator of a school
@@ -261,6 +265,21 @@ export async function requestPasswordReset(email: string, schoolCode?: string) {
       expiresAt: new Date(Date.now() + env.PASSWORD_RESET_TTL_MINUTES * 60_000),
     },
   });
+
+  // Queued through the school's outbox like any other message. A user with no
+  // school — platform staff — has no outbox to queue into, so theirs is still
+  // a password an administrator resets for them.
+  if (user.schoolId) {
+    await sendPasswordReset(
+      {
+        schoolId: user.schoolId,
+        email: user.email,
+        name: `${user.firstName} ${user.lastName}`.trim(),
+        phone: user.phone,
+      },
+      token,
+    );
+  }
 
   return { token, user };
 }

@@ -378,6 +378,23 @@ installation is one school that already owns its copy.
 | `POST /api/v1/registration/:claimToken/retry` | pushes the prompt again after a refusal, without creating a second school |
 | `POST /api/v1/registration/mpesa/callback` | the gateway's notification, authenticated by `X-Callback-Secret` |
 
+A school signing itself up cannot be reached inside the application, since it
+cannot sign in yet, so everything it needs is sent to it. All of it goes through
+the ordinary outbox, so it appears in the school's message history, the
+dispatcher retries it, and a deployment with no transport configured still
+records it without sending anything:
+
+| When | What goes out |
+| --- | --- |
+| Sign-up | Email to the administrator with the **temporary password** and the payment link, and an SMS to the phone being charged |
+| Payment confirmed | Email and SMS saying the school is open, with the sign-in link |
+| Payment refused | Email with M-Pesa's own reason and the link to try again |
+| Registration expired | Email saying it was cancelled and the school code is free again |
+
+The sign-up email is the only place the temporary password ever appears, so
+without it a school that closes the tab is locked out of an account it has paid
+for.
+
 Until the payment is confirmed, the school's status is `PENDING_PAYMENT` and:
 
 - login answers **402 `PAYMENT_REQUIRED`**, with the `claimToken` attached so an
@@ -406,6 +423,27 @@ Registration is priced on the server, per plan
 free `TRIAL` plan is not offered on sign-up at all: a free option on a public
 endpoint is a way straight past the gate, so a trial stays something an
 operator grants.
+
+### Registrations nobody pays for
+
+A sign-up holds its school code against everyone else, the school that chose it
+included, so an unpaid registration does not hold it for ever. After
+`REGISTRATION_TTL_DAYS` (7 by default) it is cancelled: the school moves to
+`CANCELLED`, its open payments are marked `FAILED`, its sessions are revoked,
+and its code is released by lengthening it past the twelve characters sign-up
+accepts — so the original is free again and no new sign-up can ever produce the
+released form. Nothing is deleted.
+
+Sign-up releases a stale code the moment someone asks for it, so this needs no
+cron to be correct. To clear the rest:
+
+```bash
+npm run registrations:expire --workspace=server
+```
+
+A `CANCELLED` school is refused at login and on every request, exactly as a
+suspended one is. Nothing read that status before a registration could expire
+into it.
 
 ### Setting up a standalone installation
 

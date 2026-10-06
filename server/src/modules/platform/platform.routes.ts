@@ -191,9 +191,11 @@ platformRouter.patch(
     });
 
     // Closing a tenant's access terminates its live sessions immediately —
-    // whether it was suspended or sent back to await a registration payment.
+    // whether it was suspended, cancelled, or sent back to await a
+    // registration payment.
     if (
       body.status === SchoolStatus.SUSPENDED ||
+      body.status === SchoolStatus.CANCELLED ||
       body.status === SchoolStatus.PENDING_PAYMENT
     ) {
       await prisma.session.updateMany({

@@ -134,6 +134,43 @@ describe('authentication and access control', () => {
     expect(res.body.devToken).toBeNull();
   });
 
+  /**
+   * The reset link has to reach the account, not just exist.
+   *
+   * It used to be returned to the caller outside production and nothing else,
+   * so in production a forgotten password was unrecoverable without an
+   * administrator.
+   */
+  it('emails the reset link to the account', async () => {
+    const email = fixture.users.accountant!.email;
+
+    await request(app)
+      .post('/api/v1/auth/forgot-password')
+      .send({ email, schoolCode: fixture.school.code });
+
+    const queued = await prisma.message.findMany({
+      where: { schoolId: fixture.school.id, recipient: email },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const reset = queued.find((m) => m.subject === 'Reset your password');
+    expect(reset).toBeDefined();
+    expect(reset!.channel).toBe('EMAIL');
+    expect(reset!.body).toMatch(/\/reset-password\/[A-Za-z0-9]+/);
+  });
+
+  /** The endpoint must answer the same way whether or not the address exists. */
+  it('queues nothing for an address that does not exist', async () => {
+    const before = await prisma.message.count({ where: { schoolId: fixture.school.id } });
+
+    const res = await request(app)
+      .post('/api/v1/auth/forgot-password')
+      .send({ email: 'nobody-at-all@nowhere.test' });
+
+    expect(res.status).toBe(200);
+    expect(await prisma.message.count({ where: { schoolId: fixture.school.id } })).toBe(before);
+  });
+
   it('enforces password strength on reset', async () => {
     const res = await request(app)
       .post('/api/v1/auth/reset-password')

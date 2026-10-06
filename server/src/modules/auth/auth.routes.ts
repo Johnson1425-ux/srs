@@ -113,9 +113,10 @@ authRouter.post(
   asyncHandler(async (req, res) => {
     const result = await authService.requestPasswordReset(req.body.email, req.body.schoolCode);
 
-    // TODO(delivery): hand the token to the email/SMS dispatcher once a
-    // transport is configured. Until then it is surfaced in non-production so
-    // the flow is testable end to end.
+    // The link itself is queued to the account's email and phone by the
+    // service. It is also returned outside production, where a development
+    // machine usually has no transport configured and the outbox is the only
+    // place it would otherwise appear.
     res.json({
       message: 'If that account exists, password reset instructions have been sent.',
       ...(isProduction ? {} : { devToken: result.token }),
