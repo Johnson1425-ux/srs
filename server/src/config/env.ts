@@ -162,6 +162,19 @@ const schema = z.object({
   MPESA_PUSH_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(8000),
 
   /**
+   * How long the gateway may hold the payment push open.
+   *
+   * This is not the same thing as the wait above. The push is the only call
+   * that blocks on a human being: the gateway answers it when the customer
+   * types their PIN or gives up. Cutting it off at the sign-up request's
+   * timeout throws that answer away, and the status query is then the only way
+   * left to find out what happened — which a portal application that has not
+   * enabled it, or will not answer it, makes a dead end. So the request is left
+   * open long enough for somebody to find their phone and read a prompt.
+   */
+  MPESA_PUSH_WAIT_MS: z.coerce.number().int().min(1000).max(300_000).default(110_000),
+
+  /**
    * How long an unpaid registration is kept before it is given up on.
    *
    * A sign-up holds its school code against everyone else, so one abandoned

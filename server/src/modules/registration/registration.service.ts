@@ -285,7 +285,48 @@ export async function applyOutcome(
   return confirmed;
 }
 
-/** Pushes the PIN prompt and records whatever came back. Never throws. */
+/**
+ * A gateway that cannot be reached is not a refused payment: the school keeps
+ * its PENDING record and can try again.
+ */
+async function recordGatewayError(
+  paymentId: string,
+  err: unknown,
+): Promise<RegistrationPayment> {
+  return prisma.registrationPayment.update({
+    where: { id: paymentId },
+    data: {
+      resultCode: err instanceof MpesaError ? (err.code ?? 'GATEWAY_ERROR') : 'GATEWAY_ERROR',
+      resultDescription: err instanceof Error ? err.message : 'Could not reach M-Pesa',
+    },
+  });
+}
+
+/** Resolves to null after `ms`, and drops its timer as soon as it is let go. */
+function after(ms: number): { elapsed: Promise<null>; cancel: () => void } {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const elapsed = new Promise<null>((resolve) => {
+    handle = setTimeout(() => resolve(null), ms);
+  });
+  return { elapsed, cancel: () => clearTimeout(handle) };
+}
+
+/**
+ * Pushes the PIN prompt and records whatever came back. Never throws.
+ *
+ * The push is the one call that waits on a person: the gateway answers it when
+ * the customer types their PIN, which is a minute or two after the sign-up
+ * form was submitted. So the two waits are separated. The request to the
+ * gateway is left open for as long as a person plausibly takes, and its answer
+ * is recorded whenever it lands, even though nobody is waiting on this
+ * function by then. The form itself waits only `MPESA_PUSH_TIMEOUT_MS` and
+ * then gets the record as it stands, which is what sends the customer to the
+ * "check your phone" screen.
+ *
+ * This is what makes a payment settle without the status query, which a portal
+ * application can refuse (`INS-997`, `INS-999`), and without a callback URL,
+ * which a development deployment has no way to receive.
+ */
 async function push(payment: RegistrationPayment): Promise<RegistrationPayment> {
   if (!mpesaConfigured) {
     return prisma.registrationPayment.update({
@@ -298,25 +339,25 @@ async function push(payment: RegistrationPayment): Promise<RegistrationPayment> 
     });
   }
 
+  // Deliberately not awaited here: the chain below outlives the HTTP request
+  // that started it. Every path settles, so this cannot reject unobserved.
+  const settled = c2bPayment({
+    amount: Number(payment.amount),
+    currency: payment.currency,
+    msisdn: payment.msisdn,
+    reference: payment.reference,
+    description: `${payment.plan} registration`,
+  })
+    .then((outcome) => applyOutcome(payment.id, outcome))
+    .catch((err: unknown) => recordGatewayError(payment.id, err))
+    .catch(() => null);
+
+  const waited = after(env.MPESA_PUSH_TIMEOUT_MS);
   try {
-    const outcome = await c2bPayment({
-      amount: Number(payment.amount),
-      currency: payment.currency,
-      msisdn: payment.msisdn,
-      reference: payment.reference,
-      description: `${payment.plan} registration`,
-    });
-    return applyOutcome(payment.id, outcome);
-  } catch (err) {
-    // A gateway that cannot be reached is not a refused payment: the school
-    // keeps its PENDING record and can try again.
-    return prisma.registrationPayment.update({
-      where: { id: payment.id },
-      data: {
-        resultCode: err instanceof MpesaError ? (err.code ?? 'GATEWAY_ERROR') : 'GATEWAY_ERROR',
-        resultDescription: err instanceof Error ? err.message : 'Could not reach M-Pesa',
-      },
-    });
+    const answered = await Promise.race([settled, waited.elapsed]);
+    return answered ?? prisma.registrationPayment.findUniqueOrThrow({ where: { id: payment.id } });
+  } finally {
+    waited.cancel();
   }
 }
 
