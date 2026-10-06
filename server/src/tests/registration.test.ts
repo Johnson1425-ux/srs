@@ -79,6 +79,15 @@ describe('M-Pesa number normalisation', () => {
     expect(normalizeMsisdn('754123456')).toBe('255754123456');
   });
 
+  // The sandbox answers these with fixed scenarios, and they are the only way
+  // to exercise a path that needs a customer to tap something on a handset.
+  it('lets the sandbox test handsets through untouched', () => {
+    expect(normalizeMsisdn('000000000001')).toBe('000000000001');
+    expect(normalizeMsisdn('000000000008')).toBe('000000000008');
+    // Still twelve digits, which is what the gateway's own pattern asks for.
+    expect(normalizeMsisdn('000000000001')).toMatch(/^[0-9]{12,14}$/);
+  });
+
   it('refuses anything that is not one of them, rather than guessing', () => {
     expect(() => normalizeMsisdn('12345')).toThrow(/Tanzanian mobile number/);
     expect(() => normalizeMsisdn('07541234567')).toThrow(/Tanzanian mobile number/);

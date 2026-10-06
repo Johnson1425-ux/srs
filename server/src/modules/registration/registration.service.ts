@@ -68,6 +68,17 @@ export interface RegisterSchoolInput {
 }
 
 /**
+ * The sandbox's own test handsets, `000000000001` to `000000000009`.
+ *
+ * Each one makes the sandbox answer with a fixed scenario — the first
+ * succeeds, the others play back a timeout, a wrong PIN, an empty wallet and
+ * so on — which is the only way to exercise a path that needs a real customer
+ * to tap something. They are not Tanzanian numbers and never will be, so they
+ * are let through on the sandbox alone.
+ */
+const SANDBOX_TEST_MSISDN = /^0{11}[1-9]$/;
+
+/**
  * Normalises a Tanzanian number to the 255XXXXXXXXX the gateway expects.
  *
  * People type their number every way there is — `0754…`, `+255 754…`,
@@ -76,6 +87,11 @@ export interface RegisterSchoolInput {
  */
 export function normalizeMsisdn(input: string): string {
   const digits = input.replace(/\D/g, '');
+
+  // Checked before the Tanzanian forms, since a test number is eleven zeros
+  // and a digit and would otherwise be read as a local number missing its
+  // leading zero.
+  if (env.MPESA_ENV === 'sandbox' && SANDBOX_TEST_MSISDN.test(digits)) return digits;
 
   if (digits.startsWith('255') && digits.length === 12) return digits;
   if (digits.startsWith('0') && digits.length === 10) return `255${digits.slice(1)}`;
