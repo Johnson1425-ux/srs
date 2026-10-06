@@ -173,10 +173,15 @@ function outcomeFromCode(
  * Pushes a PIN prompt to the customer's handset and takes the money if they
  * accept it (`c2bPayment/singleStage`).
  *
- * The call blocks while the customer reads the prompt, which is longer than a
- * browser request should be held open, so it is given a short timeout and a
- * timeout is reported as `pending` — the prompt is still on the phone, and
- * `queryStatus` below is what settles it.
+ * The call blocks while the customer reads the prompt and types their PIN, so
+ * it is given `MPESA_PUSH_WAIT_MS` rather than the sign-up request's own
+ * timeout: this is the one answer that arrives on its own, and cutting the
+ * request off before it leaves nothing but the status query, which a portal
+ * application can refuse. The caller is the one that stops waiting; this call
+ * stays open and its answer is recorded whenever it lands.
+ *
+ * A timeout is still reported as `pending`, because the prompt is on the phone
+ * either way.
  */
 export async function c2bPayment(req: C2bPaymentRequest): Promise<MpesaOutcome> {
   const { providerCode } = requireConfig();
@@ -186,7 +191,7 @@ export async function c2bPayment(req: C2bPaymentRequest): Promise<MpesaOutcome> 
     body = await callGateway<MpesaPaymentResponse>('c2bPayment/singleStage/', {
       method: 'POST',
       bearer: await sessionBearer(),
-      timeoutMs: env.MPESA_PUSH_TIMEOUT_MS,
+      timeoutMs: env.MPESA_PUSH_WAIT_MS,
       body: {
         input_Amount: req.amount.toFixed(2),
         input_Country: 'TZN',
@@ -266,7 +271,25 @@ export async function queryStatus(reference: string): Promise<MpesaOutcome> {
     return { state: 'pending', code, description, transactionId, conversationId: null };
   }
 
-  return outcomeFromCode(code, description, transactionId, null);
+  // The query was refused, which says nothing about the customer's money: the
+  // codes that land here (`INS-997` API not enabled, `INS-998` invalid market,
+  // `INS-999` invalid use case) are about this request and this portal
+  // application, not about the payment. Reading one as a refused payment marks
+  // a school FAILED for a mistake on our side of the call, and would do it to
+  // a school whose money had in fact left their wallet. So the payment stays
+  // where it was and the push response, the callback or a later answered query
+  // settles it; an unanswered one expires on REGISTRATION_TTL_DAYS.
+  //
+  // The gateway's wording is deliberately dropped rather than shown: it is
+  // logged above, and `Invalid Use Case` on a sign-up page tells a school
+  // nothing it can act on.
+  return {
+    state: 'pending',
+    code,
+    description: null,
+    transactionId,
+    conversationId: null,
+  };
 }
 
 export { mpesaConfigured };

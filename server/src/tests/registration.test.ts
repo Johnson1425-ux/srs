@@ -10,6 +10,7 @@ import {
 import { toPem } from '../lib/mpesa/crypto.js';
 import { stateForCode } from '../lib/mpesa/types.js';
 import { signAccessToken } from '../lib/tokens.js';
+import { env } from '../config/env.js';
 
 /**
  * The published response-code table, as the portal documents it.
@@ -401,6 +402,86 @@ describe('school registration behind an M-Pesa payment', () => {
       (await prisma.registrationPayment.findUniqueOrThrow({ where: { id: payment.id } }))
         .transactionId,
     ).toBe('TXN-POLLED');
+  });
+
+  /**
+   * The query is refused for reasons that have nothing to do with the money:
+   * `INS-997` is "that API is not enabled on this application", `INS-999` is
+   * "invalid use case". Reading one as a refused payment fails a school for a
+   * mistake on our side of the call — and would do it to a school whose money
+   * had already left their wallet.
+   */
+  it('does not fail a payment because the status query itself was refused', async () => {
+    gateway({ output_ResponseCode: 'INS-9', output_ResponseDesc: 'Request timeout' });
+    const { res } = await signUp();
+    const payment = await prisma.registrationPayment.findUniqueOrThrow({
+      where: { claimToken: res.body.claimToken },
+    });
+
+    await prisma.registrationPayment.update({
+      where: { id: payment.id },
+      data: { createdAt: new Date(Date.now() - 60_000) },
+    });
+
+    gateway({ output_ResponseCode: 'INS-999', output_ResponseDesc: 'Invalid Use Case' });
+
+    const status = await request(app).get(`/api/v1/registration/${res.body.claimToken}`);
+
+    expect(status.status).toBe(200);
+    expect(status.body.status).toBe('PENDING');
+    expect(status.body.school.status).toBe('PENDING_PAYMENT');
+    // And the gateway's own words are not put in front of a school, which can
+    // do nothing with "Invalid Use Case".
+    expect(status.body.message).not.toContain('Invalid Use Case');
+    expect(
+      (await prisma.registrationPayment.findUniqueOrThrow({ where: { id: payment.id } })).status,
+    ).toBe('PENDING');
+  });
+
+  /**
+   * The gateway answers the push when the customer types their PIN, which is
+   * long after the sign-up form was answered. That answer is the one thing that
+   * arrives on its own, so it has to be recorded even though nobody is waiting
+   * on it any more.
+   */
+  it('records the push answer that lands after the sign-up request is over', async () => {
+    let answer: ((body: unknown) => void) | undefined;
+    fetchMock.mockImplementation((url: unknown) => {
+      if (String(url).includes('getSession')) return ok(SESSION);
+      return new Promise((resolve) => {
+        answer = (body) => resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(body)) });
+      });
+    });
+
+    // The form's own wait, shortened so the test does not sit through it.
+    const configured = env.MPESA_PUSH_TIMEOUT_MS;
+    (env as { MPESA_PUSH_TIMEOUT_MS: number }).MPESA_PUSH_TIMEOUT_MS = 20;
+
+    let claimToken: string;
+    try {
+      const { res } = await signUp();
+      expect(res.status).toBe(202);
+      // Answered while the gateway is still holding the push open.
+      expect(res.body.status).toBe('PENDING');
+      claimToken = res.body.claimToken as string;
+    } finally {
+      (env as { MPESA_PUSH_TIMEOUT_MS: number }).MPESA_PUSH_TIMEOUT_MS = configured;
+    }
+
+    expect(answer).toBeDefined();
+    answer!({ output_ResponseCode: 'INS-0', output_TransactionID: 'TXN-LATE' });
+
+    // The chain that records it is not the one the request awaited, so wait for
+    // the record itself rather than for a promise.
+    const settled = await vi.waitFor(async () => {
+      const row = await prisma.registrationPayment.findUniqueOrThrow({ where: { claimToken } });
+      expect(row.status).toBe('CONFIRMED');
+      return row;
+    });
+
+    expect(settled.transactionId).toBe('TXN-LATE');
+    const school = await prisma.school.findUniqueOrThrow({ where: { id: settled.schoolId } });
+    expect(school.status).toBe('ACTIVE');
   });
 
   it('leaves a school unpaid when the payment is refused, and allows another try', async () => {
