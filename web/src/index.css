@@ -115,3 +115,200 @@
     @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
   }
 }
+
+/**
+ * Motion for the payment progress list.
+ *
+ * A school watching a registration payment has nothing to look at but this
+ * screen for up to two minutes, so the steps move the way the rest of the
+ * product's status surfaces do: each step eases in, the one being waited on
+ * breathes, and a settled step's tick draws itself. Everything here is
+ * decoration over text that already says the same thing, so switching it all
+ * off at the bottom of this block costs no information.
+ */
+@keyframes step-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes step-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.18);
+    opacity: 1;
+  }
+}
+
+@keyframes step-halo {
+  0% {
+    transform: scale(0.65);
+    opacity: 0.5;
+  }
+  70% {
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+
+/* The sweep that reads as "being worked on" on the active step's label. */
+@keyframes step-shimmer {
+  from {
+    background-position: 160% 0;
+  }
+  to {
+    background-position: -60% 0;
+  }
+}
+
+@keyframes mark-draw {
+  from {
+    stroke-dashoffset: 20;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes mark-pop {
+  0% {
+    transform: scale(0.55);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes rail-fill {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* Indeterminate: the wait has a typical length, not a knowable one. */
+@keyframes wait-drift {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+.step-enter {
+  animation: step-enter 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.step-dot {
+  animation: step-breathe 1.9s ease-in-out infinite;
+}
+
+.step-halo {
+  animation: step-halo 2.2s ease-out infinite;
+}
+
+.step-shimmer {
+  background-image: linear-gradient(100deg, #475569 38%, #0f172a 50%, #475569 62%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: step-shimmer 2.6s linear infinite;
+}
+
+.mark-draw {
+  stroke-dasharray: 20;
+  animation: mark-draw 0.4s cubic-bezier(0.65, 0, 0.35, 1) both;
+}
+
+.mark-pop {
+  animation: mark-pop 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.panel-enter {
+  animation: panel-enter 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.rail-fill {
+  transform-origin: top;
+  animation: rail-fill 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.wait-bar > span {
+  animation: wait-drift 1.9s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/**
+ * Motion is never the only thing saying what state a step is in, so a reader
+ * who has asked for less of it loses nothing: ticks arrive drawn, the active
+ * step is simply the dark one, and the waiting bar sits still.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .step-enter,
+  .step-dot,
+  .step-halo,
+  .mark-draw,
+  .mark-pop,
+  .panel-enter,
+  .rail-fill,
+  .wait-bar > span {
+    animation: none !important;
+  }
+
+  .step-enter,
+  .panel-enter,
+  .rail-fill {
+    opacity: 1;
+    transform: none;
+  }
+
+  .mark-draw {
+    stroke-dashoffset: 0;
+  }
+
+  .step-halo {
+    opacity: 0;
+  }
+
+  .step-shimmer {
+    animation: none;
+    background-image: none;
+    color: #0f172a;
+    -webkit-text-fill-color: #0f172a;
+  }
+
+  .wait-bar > span {
+    transform: none;
+    width: 100%;
+    opacity: 0.6;
+  }
+}
