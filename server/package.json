@@ -18,6 +18,7 @@
     "db:reset": "prisma migrate reset --force",
     "bootstrap": "tsx src/scripts/bootstrap.ts",
     "bootstrap:platform": "tsx src/scripts/bootstrap-platform.ts",
+    "registrations:expire": "tsx src/scripts/expire-registrations.ts",
     "sms:probe": "tsx src/scripts/sms-probe.ts"
   },
   "prisma": {

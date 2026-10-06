@@ -9,7 +9,14 @@ import { prisma } from '../../db/prisma.js';
 import { env, registrationFee } from '../../config/env.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { hashPassword, randomToken } from '../../lib/tokens.js';
-import { money } from '../../lib/money.js';
+import { money, formatMoney } from '../../lib/money.js';
+import {
+  sendRegistrationConfirmed,
+  sendRegistrationExpired,
+  sendRegistrationFailed,
+  sendRegistrationStarted,
+  type RegistrationNotice,
+} from './registration.notify.js';
 import {
   MpesaError,
   c2bPayment,
@@ -139,6 +146,37 @@ async function view(payment: RegistrationPayment): Promise<RegistrationView> {
 }
 
 /**
+ * Gathers what the school needs to be told, from the payment alone.
+ *
+ * Read fresh each time rather than threaded through: a notice goes out from the
+ * callback and the status poll as well as from sign-up, and those have nothing
+ * in hand but a payment row.
+ */
+async function noticeFor(payment: RegistrationPayment): Promise<RegistrationNotice | null> {
+  const school = await prisma.school.findUnique({
+    where: { id: payment.schoolId },
+    select: { id: true, name: true },
+  });
+  const admin = await prisma.user.findFirst({
+    where: { schoolId: payment.schoolId, role: Role.ADMIN },
+    orderBy: { createdAt: 'asc' },
+    select: { email: true, firstName: true, lastName: true },
+  });
+  if (!school || !admin) return null;
+
+  return {
+    schoolId: school.id,
+    schoolName: school.name,
+    administratorEmail: admin.email,
+    administratorName: `${admin.firstName} ${admin.lastName}`.trim(),
+    msisdn: payment.msisdn,
+    claimToken: payment.claimToken,
+    plan: payment.plan,
+    amountText: formatMoney(payment.amount, payment.currency),
+  };
+}
+
+/**
  * Records the gateway's verdict and, on success, lets the school in.
  *
  * Idempotent on purpose: a callback and a status poll can arrive at the same
@@ -170,8 +208,11 @@ export async function applyOutcome(
   }
 
   if (outcome.state === 'failed') {
-    return prisma.registrationPayment.update({
-      where: { id: payment.id },
+    // Conditional for the same reason as the confirmation below, and so the
+    // refusal is announced once: a payment already marked FAILED matches
+    // nothing, and the school is not told twice about one refusal.
+    const failed = await prisma.registrationPayment.updateMany({
+      where: { id: payment.id, status: PaymentStatus.PENDING },
       data: {
         status: PaymentStatus.FAILED,
         resultCode: outcome.code,
@@ -180,6 +221,17 @@ export async function applyOutcome(
         conversationId: outcome.conversationId ?? payment.conversationId,
       },
     });
+
+    const current = await prisma.registrationPayment.findUniqueOrThrow({
+      where: { id: payment.id },
+    });
+
+    if (failed.count > 0) {
+      const notice = await noticeFor(current);
+      if (notice) await sendRegistrationFailed(notice, outcome.description);
+    }
+
+    return current;
   }
 
   const limits = PLAN_LIMITS[payment.plan];
@@ -223,7 +275,14 @@ export async function applyOutcome(
     },
   });
 
-  return prisma.registrationPayment.findUniqueOrThrow({ where: { id: payment.id } });
+  const confirmed = await prisma.registrationPayment.findUniqueOrThrow({
+    where: { id: payment.id },
+  });
+
+  const notice = await noticeFor(confirmed);
+  if (notice) await sendRegistrationConfirmed(notice);
+
+  return confirmed;
 }
 
 /** Pushes the PIN prompt and records whatever came back. Never throws. */
@@ -274,8 +333,21 @@ export async function registerSchool(input: RegisterSchoolInput): Promise<Regist
   const code = input.code.toUpperCase();
   const adminEmail = input.admin.email.trim().toLowerCase();
 
-  if (await prisma.school.findUnique({ where: { code }, select: { id: true } })) {
-    throw conflict('That school code is already taken', { field: 'code' });
+  const holder = await prisma.school.findUnique({
+    where: { code },
+    select: { id: true, status: true },
+  });
+
+  if (holder) {
+    // The code may be held by a sign-up nobody ever paid for. Release it now
+    // rather than making this school wait for the next sweep — which is
+    // exactly the moment it matters, and the only moment anyone notices.
+    if (holder.status === SchoolStatus.PENDING_PAYMENT) {
+      await expireStaleRegistrations();
+    }
+    if (await prisma.school.findUnique({ where: { code }, select: { id: true } })) {
+      throw conflict('That school code is already taken', { field: 'code' });
+    }
   }
 
   const amount = registrationFee(input.plan);
@@ -352,13 +424,19 @@ export async function registerSchool(input: RegisterSchoolInput): Promise<Regist
     });
   });
 
+  // Sent before the push, so that the school has its password and its payment
+  // link in hand whatever the gateway then says — and so this message arrives
+  // ahead of any confirmation the push itself produces.
+  const notice = await noticeFor(created);
+  if (notice) await sendRegistrationStarted(notice, temporaryPassword);
+
   const pushed = await push(created);
   const result = await view(pushed);
 
   return {
     ...result,
-    // No mail transport is wired up yet, so outside production the password is
-    // handed back rather than lost. Mirrors /auth/forgot-password.
+    // Also handed back outside production, where a development machine usually
+    // has no mail transport and the outbox is the only record of it.
     ...(env.NODE_ENV === 'production' ? {} : { temporaryPassword }),
   };
 }
@@ -379,8 +457,14 @@ async function findByClaimToken(claimToken: string): Promise<RegistrationPayment
 export async function registrationStatus(claimToken: string): Promise<RegistrationView> {
   let payment = await findByClaimToken(claimToken);
 
+  // A refusal counts as settled: the gateway has given its answer, and the way
+  // forward is the retry button, which reopens the record. Without this a
+  // failed payment would be re-queried on every poll for as long as the page
+  // stayed open.
   const settled =
-    payment.status === PaymentStatus.CONFIRMED || payment.status === PaymentStatus.REVERSED;
+    payment.status === PaymentStatus.CONFIRMED ||
+    payment.status === PaymentStatus.REVERSED ||
+    payment.status === PaymentStatus.FAILED;
   const old = Date.now() - payment.createdAt.getTime() > RECONCILE_AFTER_MS;
 
   if (!settled && old && mpesaConfigured) {
@@ -405,8 +489,19 @@ export async function retryRegistrationPayment(claimToken: string): Promise<Regi
 
   const school = await prisma.school.findUnique({
     where: { id: payment.schoolId },
-    select: { code: true },
+    select: { code: true, status: true },
   });
+
+  // A claim link outlives the registration it belongs to, so it can still be
+  // opened after the registration was cancelled or the school suspended. Only
+  // a school still waiting to be let in may be charged: confirming a payment
+  // opens nothing in any other state, which would be money taken for nothing.
+  if (school && school.status !== SchoolStatus.PENDING_PAYMENT) {
+    throw conflict(
+      'This registration is no longer open. Please register again.',
+      { schoolStatus: school.status },
+    );
+  }
 
   const reopened = await prisma.registrationPayment.update({
     where: { id: payment.id },
@@ -422,6 +517,86 @@ export async function retryRegistrationPayment(claimToken: string): Promise<Regi
   });
 
   return view(await push(reopened));
+}
+
+/**
+ * Gives up on registrations nobody ever paid for.
+ *
+ * An unpaid sign-up holds its school code against everyone else, including the
+ * school that chose it — so without this, one abandoned attempt costs a school
+ * the name it wanted permanently, and the row sits in PENDING_PAYMENT forever.
+ *
+ * The code is released by lengthening it past the twelve characters sign-up
+ * accepts, which no new registration can produce, so the original is free
+ * again while the record of what happened survives. The school is moved to
+ * CANCELLED rather than deleted: it cost nothing to keep, and deleting cascades
+ * through every table a school owns.
+ */
+export async function expireStaleRegistrations(
+  now: Date = new Date(),
+): Promise<{ expired: number }> {
+  const cutoff = new Date(now.getTime() - env.REGISTRATION_TTL_DAYS * 24 * 60 * 60 * 1000);
+
+  const stale = await prisma.school.findMany({
+    where: {
+      status: SchoolStatus.PENDING_PAYMENT,
+      createdAt: { lt: cutoff },
+      // Belt and braces: a school with a confirmed payment should never still
+      // be PENDING_PAYMENT, and if one is, it is not ours to cancel.
+      registrationPayments: { none: { status: PaymentStatus.CONFIRMED } },
+    },
+    select: { id: true, code: true, name: true },
+    // Bounded because sign-up runs this sweep when it finds a code held by a
+    // stale registration, and no one request should ever be made to clear a
+    // backlog. The script, or the next sign-up, takes the rest.
+    take: 200,
+    orderBy: { createdAt: 'asc' },
+  });
+
+  let expired = 0;
+
+  for (const school of stale) {
+    const payments = await prisma.registrationPayment.findMany({
+      where: { schoolId: school.id },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Read before the work and sent after it, so a transaction that fails
+    // cannot leave a school told its registration was cancelled when it was
+    // not.
+    const latest = payments[0];
+    const notice = latest ? await noticeFor(latest) : null;
+
+    await prisma.$transaction([
+      prisma.registrationPayment.updateMany({
+        where: { schoolId: school.id, status: PaymentStatus.PENDING },
+        data: {
+          status: PaymentStatus.FAILED,
+          resultCode: 'EXPIRED',
+          resultDescription: `Not paid within ${env.REGISTRATION_TTL_DAYS} days`,
+        },
+      }),
+      prisma.school.update({
+        where: { id: school.id },
+        data: {
+          status: SchoolStatus.CANCELLED,
+          code: `${school.code}-EXP-${school.id.slice(-6).toUpperCase()}`,
+        },
+      }),
+      // Nobody signs in to a cancelled school, and `authenticate` refuses it
+      // anyway; revoking is what makes that true immediately.
+      prisma.session.updateMany({
+        where: { user: { schoolId: school.id }, revokedAt: null },
+        data: { revokedAt: now },
+      }),
+    ]);
+
+    if (notice) await sendRegistrationExpired(notice, env.REGISTRATION_TTL_DAYS);
+
+    expired += 1;
+  }
+
+  return { expired };
 }
 
 /**

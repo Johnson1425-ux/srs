@@ -3,7 +3,10 @@ import request from 'supertest';
 import { prisma } from '../db/prisma.js';
 import { app, uid } from './fixtures.js';
 import { resetSessionCache } from '../lib/mpesa/index.js';
-import { normalizeMsisdn } from '../modules/registration/registration.service.js';
+import {
+  expireStaleRegistrations,
+  normalizeMsisdn,
+} from '../modules/registration/registration.service.js';
 import { toPem } from '../lib/mpesa/crypto.js';
 import { stateForCode } from '../lib/mpesa/types.js';
 import { signAccessToken } from '../lib/tokens.js';
@@ -486,5 +489,283 @@ describe('school registration behind an M-Pesa payment', () => {
     expect(res.body.status).toBe('PENDING');
     expect(res.body.school.status).toBe('PENDING_PAYMENT');
     expect(res.body.message).toMatch(/ENOTFOUND|Could not reach/);
+  });
+});
+
+/**
+ * What a school is actually told.
+ *
+ * A school signing itself up cannot be reached inside the application, because
+ * it cannot sign in yet. If these messages do not go out, the temporary
+ * password and the link back to the payment exist only in one HTTP response —
+ * and a school that closes the tab is locked out of an account it has paid for.
+ */
+describe('what a registering school is told', () => {
+  const fetchMock = vi.fn();
+  const created: string[] = [];
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    resetSessionCache();
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockImplementation((url: unknown) =>
+      String(url).includes('getSession')
+        ? ok(SESSION)
+        : ok({ output_ResponseCode: 'INS-9', output_ResponseDesc: 'Request timeout' }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  afterAll(async () => {
+    await prisma.school.deleteMany({ where: { id: { in: created } } });
+    await prisma.$disconnect();
+  });
+
+  async function signUp(overrides: Partial<SignUpBody> = {}) {
+    const res = await request(app)
+      .post('/api/v1/registration')
+      .send({ ...signUpBody(), ...overrides });
+    if (res.status === 202) created.push(res.body.school.id as string);
+    return res;
+  }
+
+  const outbox = (schoolId: string) =>
+    prisma.message.findMany({ where: { schoolId }, orderBy: { createdAt: 'asc' } });
+
+  it('emails the temporary password and the payment link, and texts the payer', async () => {
+    const res = await signUp();
+    const messages = await outbox(res.body.school.id);
+
+    const email = messages.find((m) => m.channel === 'EMAIL');
+    expect(email).toBeDefined();
+    expect(email!.recipient).toBe(res.body.administratorEmail);
+    // Without the password in this message there is no way into the account.
+    expect(email!.body).toContain(res.body.temporaryPassword);
+    expect(email!.body).toContain(`/register/${res.body.claimToken}`);
+
+    const sms = messages.find((m) => m.channel === 'SMS');
+    expect(sms).toBeDefined();
+    expect(sms!.recipient).toBe('+255754123456');
+    expect(sms!.body).toContain(`/register/${res.body.claimToken}`);
+
+    // No transport is configured in tests, so they wait in the outbox.
+    expect(messages.every((m) => m.status === 'QUEUED')).toBe(true);
+  });
+
+  it('says the school is open once the payment confirms, and says it once', async () => {
+    const res = await signUp();
+    const payment = await prisma.registrationPayment.findUniqueOrThrow({
+      where: { claimToken: res.body.claimToken },
+    });
+
+    const callback = () =>
+      request(app)
+        .post('/api/v1/registration/mpesa/callback')
+        .set('X-Callback-Secret', 'test-callback-secret')
+        .send({
+          output_ThirdPartyConversationID: payment.reference,
+          output_ResponseCode: 'INS-0',
+          output_TransactionID: 'TXN-NOTIFY',
+        });
+
+    await callback();
+    const after = await outbox(res.body.school.id);
+    const confirmations = after.filter((m) => m.subject?.includes('your school is open'));
+    expect(confirmations).toHaveLength(1);
+    expect(confirmations[0]!.body).toContain('/login');
+
+    // A replayed callback confirms nothing a second time, so it must not
+    // produce a second message either.
+    await callback();
+    const replayed = await outbox(res.body.school.id);
+    expect(replayed.filter((m) => m.subject?.includes('your school is open'))).toHaveLength(1);
+  });
+
+  it('emails a refusal once, however many times the page polls', async () => {
+    fetchMock.mockImplementation((url: unknown) =>
+      String(url).includes('getSession')
+        ? ok(SESSION)
+        : ok({ output_ResponseCode: 'INS-2006', output_ResponseDesc: 'Not enough balance' }),
+    );
+
+    const res = await signUp();
+    expect(res.body.status).toBe('FAILED');
+
+    const failureCount = async () =>
+      (await outbox(res.body.school.id)).filter((m) => m.subject?.includes('did not go through'))
+        .length;
+
+    expect(await failureCount()).toBe(1);
+
+    // A refusal is a settled answer, so polling it neither re-queries the
+    // gateway nor re-sends the message.
+    await request(app).get(`/api/v1/registration/${res.body.claimToken}`);
+    await request(app).get(`/api/v1/registration/${res.body.claimToken}`);
+    expect(await failureCount()).toBe(1);
+  });
+});
+
+/**
+ * Giving up on registrations nobody paid for.
+ *
+ * An unpaid sign-up holds its school code against everyone, the school that
+ * chose it included — so without expiry, one abandoned attempt costs a school
+ * the name it wanted permanently.
+ */
+describe('expiring unpaid registrations', () => {
+  const fetchMock = vi.fn();
+  const created: string[] = [];
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    resetSessionCache();
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockImplementation((url: unknown) =>
+      String(url).includes('getSession')
+        ? ok(SESSION)
+        : ok({ output_ResponseCode: 'INS-9', output_ResponseDesc: 'Request timeout' }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  afterAll(async () => {
+    await prisma.school.deleteMany({ where: { id: { in: created } } });
+    await prisma.$disconnect();
+  });
+
+  async function signUp(overrides: Partial<SignUpBody> = {}) {
+    const res = await request(app)
+      .post('/api/v1/registration')
+      .send({ ...signUpBody(), ...overrides });
+    if (res.status === 202) created.push(res.body.school.id as string);
+    return res;
+  }
+
+  /** Ages a sign-up past the retention window. */
+  const age = (schoolId: string, days: number) =>
+    prisma.school.update({
+      where: { id: schoolId },
+      data: { createdAt: new Date(Date.now() - days * 24 * 60 * 60 * 1000) },
+    });
+
+  it('leaves a registration that is merely unpaid alone', async () => {
+    const res = await signUp();
+
+    expect(await expireStaleRegistrations()).toEqual({ expired: 0 });
+    expect(
+      (await prisma.school.findUniqueOrThrow({ where: { id: res.body.school.id } })).status,
+    ).toBe('PENDING_PAYMENT');
+  });
+
+  it('never touches a school that paid', async () => {
+    const res = await signUp();
+    const payment = await prisma.registrationPayment.findUniqueOrThrow({
+      where: { claimToken: res.body.claimToken },
+    });
+    await request(app)
+      .post('/api/v1/registration/mpesa/callback')
+      .set('X-Callback-Secret', 'test-callback-secret')
+      .send({
+        output_ThirdPartyConversationID: payment.reference,
+        output_ResponseCode: 'INS-0',
+      });
+
+    await age(res.body.school.id, 400);
+
+    expect(await expireStaleRegistrations()).toEqual({ expired: 0 });
+    const school = await prisma.school.findUniqueOrThrow({ where: { id: res.body.school.id } });
+    expect(school.status).toBe('ACTIVE');
+    expect(school.code).toBe(res.body.school.code);
+  });
+
+  it('cancels a stale registration, releases its code and tells the school', async () => {
+    const res = await signUp();
+    const code = res.body.school.code as string;
+    await age(res.body.school.id, 30);
+
+    expect(await expireStaleRegistrations()).toEqual({ expired: 1 });
+
+    const school = await prisma.school.findUniqueOrThrow({ where: { id: res.body.school.id } });
+    expect(school.status).toBe('CANCELLED');
+    // Released by lengthening it past what sign-up accepts, so the original is
+    // free and no new sign-up can ever produce this one.
+    expect(school.code).not.toBe(code);
+    expect(school.code.startsWith(`${code}-EXP-`)).toBe(true);
+    expect(school.code.length).toBeGreaterThan(12);
+
+    const payment = await prisma.registrationPayment.findUniqueOrThrow({
+      where: { claimToken: res.body.claimToken },
+    });
+    expect(payment.status).toBe('FAILED');
+    expect(payment.resultCode).toBe('EXPIRED');
+
+    const messages = await prisma.message.findMany({ where: { schoolId: res.body.school.id } });
+    expect(messages.some((m) => m.subject?.includes('registration cancelled'))).toBe(true);
+
+    // And the code is genuinely usable again.
+    const reuse = await signUp({ code });
+    expect(reuse.status).toBe(202);
+    expect(reuse.body.school.code).toBe(code);
+  });
+
+  it('releases a held code at sign-up, without waiting for the sweep', async () => {
+    const first = await signUp();
+    const code = first.body.school.code as string;
+    await age(first.body.school.id, 30);
+
+    // No sweep is run here: taking the code is what triggers the release.
+    const second = await signUp({ code });
+
+    expect(second.status).toBe(202);
+    expect(second.body.school.code).toBe(code);
+    expect(
+      (await prisma.school.findUniqueOrThrow({ where: { id: first.body.school.id } })).status,
+    ).toBe('CANCELLED');
+  });
+
+  it('refuses to charge again through a cancelled registration\'s link', async () => {
+    const res = await signUp();
+    await age(res.body.school.id, 30);
+    await expireStaleRegistrations();
+
+    // The claim link outlives the registration, and a retry through it would
+    // take money for a school that confirming can no longer open.
+    const retry = await request(app).post(`/api/v1/registration/${res.body.claimToken}/retry`);
+
+    expect(retry.status).toBe(409);
+    expect(retry.body.error.message).toMatch(/no longer open/);
+    expect(retry.body.error.details.schoolStatus).toBe('CANCELLED');
+  });
+
+  it('shuts a cancelled school out, at login and on every request', async () => {
+    const res = await signUp();
+    const { administratorEmail, temporaryPassword } = res.body;
+    const admin = await prisma.user.findFirstOrThrow({
+      where: { schoolId: res.body.school.id },
+    });
+    await age(res.body.school.id, 30);
+    await expireStaleRegistrations();
+
+    const login = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: administratorEmail, password: temporaryPassword });
+    expect(login.status).toBe(403);
+    expect(login.body.error.message).toMatch(/closed/);
+
+    // Nothing read this status before an expiry could produce it, so the
+    // request path is checked too.
+    const token = signAccessToken({
+      sub: admin.id,
+      schoolId: admin.schoolId,
+      role: admin.role,
+    });
+    const me = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${token}`);
+    expect(me.status).toBe(403);
   });
 });

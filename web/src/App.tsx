@@ -7,6 +7,7 @@ import type { Permission } from './lib/types';
 
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { StudentsPage } from './pages/StudentsPage';
 import { DocumentsPage } from './pages/DocumentsPage';
@@ -88,6 +89,9 @@ export function App() {
           until the fee is paid there is nothing to show inside it. */}
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/register/:claimToken" element={<RegisterPage />} />
+      {/* Opened from a password reset email. The token in the URL is the
+          credential, so this is outside the application shell too. */}
+      <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
       {/* Opened by a parent from a link in a text message: no session, and
           deliberately outside the application shell. */}
       <Route path="/r/:token" element={<PublicResultPage />} />
