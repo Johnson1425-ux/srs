@@ -30,6 +30,12 @@ export interface RegistrationNotice {
   claimToken: string;
   plan: string;
   amountText: string;
+  /**
+   * What the school calls the network it is paying from — "M-Pesa", "Airtel
+   * Money". Every message names it, because a school that chose Airtel and is
+   * told to enter its M-Pesa PIN has been told to do something impossible.
+   */
+  providerLabel: string;
 }
 
 /** Where a school resumes a payment it has not finished. */
@@ -75,8 +81,8 @@ export async function sendRegistrationStarted(
         `Hello ${notice.administratorName},`,
         '',
         `${notice.schoolName} has been registered on the ${notice.plan} plan, and we have`,
-        `asked M-Pesa to charge ${notice.amountText} to ${notice.msisdn}. Enter your M-Pesa PIN on`,
-        'that phone to complete it.',
+        `asked ${notice.providerLabel} to charge ${notice.amountText} to ${notice.msisdn}. Approve`,
+        `the ${notice.providerLabel} prompt on that phone to complete it.`,
         '',
         `Follow your payment here: ${link}`,
         'That link is the only way back to this payment, so keep this message.',
@@ -95,7 +101,7 @@ export async function sendRegistrationStarted(
       // Short on purpose: SMS is billed per 160 characters.
       channel: MessageChannel.SMS,
       recipient: normalizePhone(notice.msisdn),
-      body: `${notice.schoolName}: enter your M-Pesa PIN to pay ${notice.amountText}. Track it: ${link}`,
+      body: `${notice.schoolName}: approve the ${notice.providerLabel} prompt to pay ${notice.amountText}. Track it: ${link}`,
     },
   ]);
 }
@@ -126,7 +132,7 @@ export async function sendRegistrationConfirmed(notice: RegistrationNotice): Pro
 }
 
 /**
- * Sent when M-Pesa refuses the payment.
+ * Sent when the gateway refuses the payment.
  *
  * The sign-up page says the same thing, but only to a browser that is still
  * open — and a payment is most likely to be refused precisely when somebody has
@@ -146,8 +152,8 @@ export async function sendRegistrationFailed(
       body: [
         `Hello ${notice.administratorName},`,
         '',
-        `M-Pesa did not complete the ${notice.amountText} payment for ${notice.schoolName}.`,
-        ...(reason ? ['', `M-Pesa said: ${reason}`] : []),
+        `${notice.providerLabel} did not complete the ${notice.amountText} payment for ${notice.schoolName}.`,
+        ...(reason ? ['', `${notice.providerLabel} said: ${reason}`] : []),
         '',
         `You can try again here: ${link}`,
         '',

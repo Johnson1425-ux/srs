@@ -1,3 +1,5 @@
+import type { PaymentOutcome, PaymentState } from '../payments/types.js';
+
 /** `INS-0` is the gateway's only success code; everything else is a refusal. */
 export const MPESA_SUCCESS = 'INS-0';
 
@@ -50,14 +52,13 @@ export interface C2bPaymentRequest {
   description: string;
 }
 
-/** What a push or a status query tells us about one payment. */
-export interface MpesaOutcome {
-  state: 'confirmed' | 'pending' | 'failed';
-  code: string | null;
-  description: string | null;
-  transactionId: string | null;
-  conversationId: string | null;
-}
+/**
+ * What a push or a status query tells us about one payment.
+ *
+ * The same shape every provider reports, so that registration can read an
+ * M-Pesa answer and an Airtel answer with one piece of code.
+ */
+export type MpesaOutcome = PaymentOutcome;
 
 /**
  * What a gateway response code means on its own.
@@ -66,7 +67,7 @@ export interface MpesaOutcome {
  * "still waiting" is never recorded as a refusal on one path and a wait on
  * another.
  */
-export function stateForCode(code: string | null | undefined): 'confirmed' | 'pending' | 'failed' {
+export function stateForCode(code: string | null | undefined): PaymentState {
   if (!code) return 'pending';
   if (code === MPESA_SUCCESS) return 'confirmed';
   return MPESA_PENDING_CODES.includes(code) ? 'pending' : 'failed';

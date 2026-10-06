@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -7,6 +7,26 @@ import { money } from '../lib/format';
 import { ErrorNote, Field, Spinner } from '../components/ui';
 
 type Plan = 'BASIC' | 'STANDARD' | 'PREMIUM';
+type Provider = 'MPESA' | 'AIRTEL_MONEY';
+
+interface ProviderOffer {
+  provider: Provider;
+  label: string;
+  enabled: boolean;
+}
+
+/**
+ * What to put in the number box, per network.
+ *
+ * Airtel and Vodacom own different prefixes in Tanzania, and the gateway that
+ * refuses a number from the other network says so in a code nobody can read.
+ * A worked example in the hint is cheaper than that refusal.
+ */
+const NUMBER_HINT: Record<Provider, string> = {
+  MPESA: 'The phone that will be asked for a PIN. Any format: 0754 123 456 or 255754123456.',
+  AIRTEL_MONEY:
+    'The Airtel phone that will get the payment prompt. Any format: 0784 123 456 or 255784123456.',
+};
 
 interface PlanOffer {
   plan: Plan;
@@ -23,6 +43,8 @@ interface Registration {
   plan: Plan;
   amount: number;
   currency: string;
+  provider: Provider;
+  providerLabel: string;
   msisdn: string;
   message: string | null;
   paidAt: string | null;
@@ -38,6 +60,7 @@ interface RegisterForm {
   city?: string;
   region?: string;
   plan: Plan;
+  provider: Provider;
   msisdn: string;
   adminFirstName: string;
   adminLastName: string;
@@ -75,17 +98,41 @@ function SignUpForm() {
   const plans = useQuery({
     queryKey: ['registration', 'plans'],
     queryFn: () =>
-      get<{ currency: string; paymentsEnabled: boolean; data: PlanOffer[] }>('/registration/plans'),
+      get<{
+        currency: string;
+        paymentsEnabled: boolean;
+        providers?: ProviderOffer[];
+        data: PlanOffer[];
+      }>('/registration/plans'),
   });
 
   const {
     register,
     handleSubmit,
+    setValue,
     watch,
     formState: { errors, isSubmitting },
-  } = useForm<RegisterForm>({ defaultValues: { plan: 'BASIC' } });
+  } = useForm<RegisterForm>({ defaultValues: { plan: 'BASIC', provider: 'MPESA' } });
 
   const chosen = plans.data?.data.find((p) => p.plan === watch('plan'));
+  const provider = watch('provider');
+
+  // Only the networks this deployment actually has credentials for: offering
+  // one it cannot push to sends a school to a "check your phone" screen for a
+  // prompt that was never sent.
+  const providers = (plans.data?.providers ?? []).filter((p) => p.enabled);
+  const providerLabel =
+    providers.find((p) => p.provider === provider)?.label ?? 'mobile money';
+
+  // The form opens on M-Pesa because that is the common case and the price
+  // list has not arrived yet. A deployment that has only configured Airtel
+  // would otherwise push to a gateway it has no credentials for, so the choice
+  // moves to the first network that can actually take money.
+  useEffect(() => {
+    if (providers.length > 0 && !providers.some((p) => p.provider === provider)) {
+      setValue('provider', providers[0]!.provider);
+    }
+  }, [providers, provider, setValue]);
 
   const onSubmit = handleSubmit(async (values) => {
     setError(null);
@@ -98,6 +145,7 @@ function SignUpForm() {
         city: values.city || null,
         region: values.region || null,
         plan: values.plan,
+        provider: values.provider,
         msisdn: values.msisdn,
         admin: {
           firstName: values.adminFirstName,
@@ -114,7 +162,7 @@ function SignUpForm() {
   return (
     <Shell
       title="Register your school"
-      subtitle="Pay the registration fee with M-Pesa to open your school's account"
+      subtitle="Pay the registration fee with mobile money to open your school's account"
     >
       {error != null && (
         <div className="mb-4">
@@ -123,8 +171,8 @@ function SignUpForm() {
       )}
       {plans.data && !plans.data.paymentsEnabled && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          M-Pesa is not configured on this deployment, so no payment prompt will be sent. Your
-          school will be recorded as awaiting payment.
+          Mobile money is not configured on this deployment, so no payment prompt will be sent.
+          Your school will be recorded as awaiting payment.
         </div>
       )}
 
@@ -197,16 +245,41 @@ function SignUpForm() {
           </Field>
         </div>
 
+        {providers.length > 1 && (
+          <Field label="Pay with" required error={errors.provider?.message}>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {providers.map((p) => (
+                <label
+                  key={p.provider}
+                  className={`flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 text-sm ${
+                    provider === p.provider
+                      ? 'border-brand-500 bg-brand-50 text-slate-900'
+                      : 'border-slate-200 text-slate-600 hover:border-slate-300'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    value={p.provider}
+                    className="h-4 w-4"
+                    {...register('provider', { required: true })}
+                  />
+                  <span className="font-medium">{p.label}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        )}
+
         <Field
-          label="M-Pesa number"
+          label={`${providerLabel} number`}
           required
-          hint="The phone that will be asked for a PIN. Any format: 0754 123 456 or 255754123456."
+          hint={NUMBER_HINT[provider] ?? NUMBER_HINT.MPESA}
           error={errors.msisdn?.message}
         >
           <input
             className="input"
-            placeholder="0754 123 456"
-            {...register('msisdn', { required: 'An M-Pesa number is required' })}
+            placeholder={provider === 'AIRTEL_MONEY' ? '0784 123 456' : '0754 123 456'}
+            {...register('msisdn', { required: `A ${providerLabel} number is required` })}
           />
         </Field>
 
@@ -214,7 +287,7 @@ function SignUpForm() {
           {isSubmitting
             ? 'Sending the payment request…'
             : chosen
-              ? `Pay ${money(chosen.amount, chosen.currency)} with M-Pesa`
+              ? `Pay ${money(chosen.amount, chosen.currency)} with ${providerLabel}`
               : 'Continue'}
         </button>
         <p className="text-center text-xs text-slate-400">
@@ -228,8 +301,8 @@ function SignUpForm() {
 /**
  * The "check your phone" screen.
  *
- * Polls while the payment is open: the server reconciles with M-Pesa on each
- * poll, so this settles even where the gateway cannot reach a callback URL.
+ * Polls while the payment is open: the server reconciles with the gateway on
+ * each poll, so this settles even where it cannot reach a callback URL.
  */
 function PaymentStatus({ claimToken }: { claimToken: string }) {
   const [error, setError] = useState<unknown>(null);
@@ -310,10 +383,12 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
         }
       >
         {failed ? (
-          <p>{reg.message ?? 'M-Pesa did not complete the payment.'}</p>
+          <p>{reg.message ?? `${reg.providerLabel} did not complete the payment.`}</p>
         ) : (
           <>
-            <p className="font-medium">Enter your M-Pesa PIN on {reg.msisdn}.</p>
+            <p className="font-medium">
+              Approve the {reg.providerLabel} prompt on {reg.msisdn}.
+            </p>
             <p className="mt-1">
               This page updates itself the moment the payment goes through. Until then your school
               cannot be signed in to.
@@ -325,7 +400,7 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
 
       {!failed && (
         <div className="mt-4 flex items-center gap-2 text-sm text-slate-500">
-          <Spinner label="Waiting for M-Pesa…" />
+          <Spinner label={`Waiting for ${reg.providerLabel}…`} />
         </div>
       )}
 

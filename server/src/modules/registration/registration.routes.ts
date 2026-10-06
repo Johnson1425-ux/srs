@@ -3,7 +3,8 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { timingSafeEqual } from 'node:crypto';
 import { asyncHandler, validate } from '../../lib/http.js';
-import { env, isProduction, mpesaConfigured } from '../../config/env.js';
+import { MobileMoneyProvider } from '@prisma/client';
+import { env, isProduction } from '../../config/env.js';
 import { forbidden } from '../../lib/errors.js';
 import { audit } from '../../lib/audit.js';
 import * as service from './registration.service.js';
@@ -51,7 +52,17 @@ const registerSchema = z.object({
   // TRIAL is deliberately absent: it is free, and a free option on a public
   // endpoint is a way straight past the gate.
   plan: z.enum(['BASIC', 'STANDARD', 'PREMIUM']),
-  /** The phone that will be prompted for a PIN. */
+  /**
+   * Which mobile money network pays the fee. Defaults to M-Pesa so a client
+   * written before Airtel existed keeps working unchanged.
+   *
+   * Only the networks with a gateway behind them are admitted — the enum has
+   * four, because school fees are recorded against all four by hand.
+   */
+  provider: z
+    .enum([MobileMoneyProvider.MPESA, MobileMoneyProvider.AIRTEL_MONEY])
+    .default(MobileMoneyProvider.MPESA),
+  /** The phone that will be prompted to approve the payment. */
   msisdn: z.string().trim().min(9).max(20),
   admin: z.object({
     firstName: z.string().trim().min(1).max(60),
@@ -67,7 +78,10 @@ registrationRouter.get(
   asyncHandler(async (_req, res) => {
     res.json({
       currency: 'TZS',
-      paymentsEnabled: mpesaConfigured,
+      // Kept for a client written before there was more than one network: it
+      // means "some network can take money", which is what it always meant.
+      paymentsEnabled: service.anyProviderConfigured(),
+      providers: service.providerOffers(),
       data: service.SELF_SERVICE_PLANS.map((plan) => ({
         plan,
         ...service.planOffer(plan),
@@ -110,67 +124,57 @@ registrationRouter.post(
 );
 
 /** Constant-time compare so the secret cannot be guessed a byte at a time. */
-function secretMatches(presented: string | undefined): boolean {
-  if (!env.MPESA_CALLBACK_SECRET || !presented) return false;
+function secretMatches(expected: string | undefined, presented: string | undefined): boolean {
+  if (!expected || !presented) return false;
   const a = Buffer.from(presented);
-  const b = Buffer.from(env.MPESA_CALLBACK_SECRET);
+  const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**
- * The gateway's own notification, where a deployment has a reachable URL for
+ * A gateway's own notification, where a deployment has a reachable URL for
  * one. Everything here is also settled by the status poll, so this is an
  * optimisation rather than the only path — which is what lets the sandbox work
  * from a laptop.
  *
- * Field names follow the gateway's `output_*` convention, with the plain names
- * accepted too since the callback shape varies by market.
+ * One route per network, each with its own secret, rather than one endpoint
+ * sniffing the body: M-Pesa's `output_ResponseCode` and Airtel's `status_code`
+ * overlap in neither values nor meaning, and the provider is what tells the
+ * service which of the two it is reading. A callback posted to the other
+ * network's route settles nothing.
  */
-const callbackSchema = z
-  .object({
-    input_ThirdPartyConversationID: z.string().optional(),
-    output_ThirdPartyConversationID: z.string().optional(),
-    reference: z.string().optional(),
-    output_ResponseCode: z.string().optional(),
-    resultCode: z.string().optional(),
-    output_ResponseDesc: z.string().optional(),
-    resultDescription: z.string().optional(),
-    output_TransactionID: z.string().optional(),
-    transactionId: z.string().optional(),
-    output_ConversationID: z.string().optional(),
-    conversationId: z.string().optional(),
-  })
-  .passthrough();
+function callbackRoute(
+  path: string,
+  provider: MobileMoneyProvider,
+  secret: () => string | undefined,
+): void {
+  registrationRouter.post(
+    path,
+    // Passthrough on purpose: the body is a gateway's, its shape varies by
+    // market, and the provider is what reads it. Nothing in it is trusted —
+    // the reference has to be one we issued, it has to belong to this
+    // network, and the amount is never read from a callback at all.
+    validate(z.object({}).passthrough()),
+    asyncHandler(async (req, res) => {
+      if (!secretMatches(secret(), req.header('X-Callback-Secret'))) {
+        throw forbidden('Invalid callback secret');
+      }
 
-registrationRouter.post(
-  '/mpesa/callback',
-  validate(callbackSchema),
-  asyncHandler(async (req, res) => {
-    if (!secretMatches(req.header('X-Callback-Secret'))) {
-      throw forbidden('Invalid callback secret');
-    }
+      const result = await service.confirmFromCallback(
+        provider,
+        req.body as Record<string, unknown>,
+      );
 
-    const body = req.body as z.infer<typeof callbackSchema>;
-    const reference =
-      body.output_ThirdPartyConversationID ??
-      body.input_ThirdPartyConversationID ??
-      body.reference;
+      // Always 202, matched or not: a gateway retrying against the wrong
+      // deployment must not be able to discover which references exist here.
+      res.status(202).json({ received: true, matched: result.matched });
+    }),
+  );
+}
 
-    if (!reference) {
-      res.status(202).json({ received: true, matched: false });
-      return;
-    }
-
-    const result = await service.confirmFromCallback({
-      reference,
-      resultCode: body.output_ResponseCode ?? body.resultCode,
-      resultDescription: body.output_ResponseDesc ?? body.resultDescription,
-      transactionId: body.output_TransactionID ?? body.transactionId,
-      conversationId: body.output_ConversationID ?? body.conversationId,
-    });
-
-    // Always 202, matched or not: a gateway retrying against the wrong
-    // deployment must not be able to discover which references exist here.
-    res.status(202).json({ received: true, matched: result.matched });
-  }),
+callbackRoute('/mpesa/callback', MobileMoneyProvider.MPESA, () => env.MPESA_CALLBACK_SECRET);
+callbackRoute(
+  '/airtel/callback',
+  MobileMoneyProvider.AIRTEL_MONEY,
+  () => env.AIRTEL_CALLBACK_SECRET,
 );
