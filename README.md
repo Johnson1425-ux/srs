@@ -364,7 +364,7 @@ tenant of one, so a school can be migrated between the two without a schema
 change. Only the behaviours above differ, which is why this is a flag rather
 than a fork.
 
-### Self-service registration, paid with M-Pesa
+### Self-service registration, paid with mobile money
 
 A school can also sign itself up, and a school that has signed itself up cannot
 reach the application until it has paid. SaaS deployments only — a standalone
@@ -372,11 +372,25 @@ installation is one school that already owns its copy.
 
 | | |
 | --- | --- |
-| `GET /api/v1/registration/plans` | what the plans cost and whether M-Pesa is configured |
-| `POST /api/v1/registration` | creates the school on `PENDING_PAYMENT` with its first administrator, and pushes a PIN prompt to the given phone. Answers **202** with a `claimToken` and **no tokens** |
-| `GET /api/v1/registration/:claimToken` | the sign-up page's status poll. Reconciles against M-Pesa while the payment is open |
+| `GET /api/v1/registration/plans` | what the plans cost, and which mobile money networks this deployment can take money through |
+| `POST /api/v1/registration` | creates the school on `PENDING_PAYMENT` with its first administrator, and pushes a payment prompt to the given phone. `provider` picks the network and defaults to `MPESA`. Answers **202** with a `claimToken` and **no tokens** |
+| `GET /api/v1/registration/:claimToken` | the sign-up page's status poll. Reconciles against the chosen gateway while the payment is open |
 | `POST /api/v1/registration/:claimToken/retry` | pushes the prompt again after a refusal, without creating a second school |
-| `POST /api/v1/registration/mpesa/callback` | the gateway's notification, authenticated by `X-Callback-Secret` |
+| `POST /api/v1/registration/mpesa/callback` | Vodacom's notification, authenticated by `X-Callback-Secret` |
+| `POST /api/v1/registration/airtel/callback` | Airtel's notification, authenticated by its own `X-Callback-Secret` |
+
+Two networks are integrated, **M-Pesa** and **Airtel Money**, and the school
+picks one on the sign-up form. A network with no credentials on this deployment
+is not offered at all, so Airtel can be left unconfigured and nothing about
+M-Pesa changes. `MobileMoneyProvider` has two more members, MIXX by Yas and
+HaloPesa, because school fees are recorded against them by hand; neither has a
+gateway behind it, so neither can be chosen at sign-up.
+
+Each network sits behind one `PaymentProvider` (`server/src/lib/payments/`),
+which is the whole seam: registration takes the provider the school chose,
+pushes a prompt and reads back a `PaymentOutcome` of `confirmed`, `pending` or
+`failed`. Adding a network is writing one of those, not editing the sign-up
+flow.
 
 A school signing itself up cannot be reached inside the application, since it
 cannot sign in yet, so everything it needs is sent to it. All of it goes through
@@ -386,9 +400,9 @@ records it without sending anything:
 
 | When | What goes out |
 | --- | --- |
-| Sign-up | Email to the administrator with the **temporary password** and the payment link, and an SMS to the phone being charged |
+| Sign-up | Email to the administrator with the **temporary password** and the payment link, and an SMS to the phone being charged. Both name the network the school chose |
 | Payment confirmed | Email and SMS saying the school is open, with the sign-in link |
-| Payment refused | Email with M-Pesa's own reason and the link to try again |
+| Payment refused | Email with the gateway's own reason and the link to try again |
 | Registration expired | Email saying it was cancelled and the school code is free again |
 
 The sign-up email is the only place the temporary password ever appears, so
@@ -414,9 +428,28 @@ and `MPESA_ENV` defaults to `sandbox`, so a half-configured deployment cannot
 take real money off a real phone. See the `MPESA_*` block in
 `server/.env.example`.
 
-The status poll reconciles with `queryTransactionStatus` on every request while
-a payment is open, so **the sandbox works from a laptop** — the gateway never
-has to reach a callback URL. The callback is an optimisation on top.
+Airtel Money runs on Airtel Africa's **Open API**, which is nothing like
+M-Pesa's: the credentials are OAuth2 client credentials rather than a key pair,
+the collection push is answered as soon as the prompt is queued rather than
+when the customer types their PIN, and the money's fate is read from a
+transaction status rather than a response code. Only `TS` is paid and only `TF`
+is refused — `TIP` and `TA` both mean Airtel does not know yet, and `TA` in
+particular must never be read as a refusal. `AIRTEL_ENV` defaults to `sandbox`
+for the same reason `MPESA_ENV` does. See the `AIRTEL_*` block in
+`server/.env.example`.
+
+The status poll reconciles with the gateway on every request while a payment is
+open — `queryTransactionStatus` for M-Pesa, `GET /standard/v1/payments/{id}`
+for Airtel — so **the sandbox works from a laptop**: the gateway never has to
+reach a callback URL. The callbacks are an optimisation on top.
+
+A refused *status query* never fails a payment, on either network. The codes
+that refuse one (M-Pesa's `INS-997`/`INS-999`, Airtel's invalid-subscription
+answers) are about our request and our portal application, not about anybody's
+money, and reading one as a refused payment would mark a school `FAILED` for a
+fault on our side of the call — including a school whose money had already left
+their wallet. The payment stays where it was, and the push answer, a callback
+or a later answered query settles it.
 
 Registration is priced on the server, per plan
 (`MPESA_REGISTRATION_FEE_BASIC` and friends), never from the request body. The
@@ -1085,12 +1118,15 @@ Stated plainly, with reasons:
    `twoFactorEnabled` and `twoFactorSecret`, but the TOTP enrolment and
    verification flow is not built.
 
-4. **Payment gateway integration.** Mobile-money payments are recorded with
-   provider and transaction reference, but no live M-Pesa/Airtel/Mixx/HaloPesa
-   API calls are made and there is no webhook endpoint — both need merchant
-   credentials. The PRD places this in Phase 3. Nor is there any billing for
-   the subscriptions themselves: a plan is set by platform staff, not paid for
-   online.
+4. **Payment gateway integration.** Partly built. The fee a *school* pays to
+   register for the application is taken live, through M-Pesa or Airtel Money,
+   with a callback endpoint for each — see
+   [Self-service registration](#self-service-registration-paid-with-mobile-money).
+   A *family* paying a student's fees is still only recorded, with provider and
+   transaction reference and no gateway call; MIXX by Yas and HaloPesa have no
+   integration at all. The PRD places that in Phase 3. Nor is there any billing
+   for the subscriptions themselves beyond the one-off registration fee: a plan
+   is renewed by platform staff, not paid for online.
 
    SMS and email **are** wired up — Africa's Talking and SMTP respectively.
    See the deployment section.

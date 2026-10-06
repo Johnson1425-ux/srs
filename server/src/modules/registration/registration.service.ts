@@ -1,5 +1,6 @@
 import {
   type RegistrationPayment,
+  MobileMoneyProvider,
   PaymentStatus,
   Role,
   SchoolStatus,
@@ -18,13 +19,16 @@ import {
   type RegistrationNotice,
 } from './registration.notify.js';
 import {
-  MpesaError,
-  c2bPayment,
-  mpesaConfigured,
-  queryStatus,
-  stateForCode,
-  type MpesaOutcome,
-} from '../../lib/mpesa/index.js';
+  anyProviderConfigured,
+  paymentProvider,
+  providerConfigured,
+  providerOffers,
+  SELF_SERVICE_PROVIDERS,
+  type PaymentOutcome,
+  type PaymentProvider,
+} from '../../lib/payments/index.js';
+
+export { SELF_SERVICE_PROVIDERS, anyProviderConfigured, providerOffers };
 
 /** Plans a school may buy itself. TRIAL is granted by an operator, never sold. */
 export const SELF_SERVICE_PLANS = [
@@ -63,6 +67,8 @@ export interface RegisterSchoolInput {
   city?: string | null;
   region?: string | null;
   plan: (typeof SELF_SERVICE_PLANS)[number];
+  /** Which mobile money network the fee is paid from. */
+  provider: MobileMoneyProvider;
   msisdn: string;
   admin: { firstName: string; lastName: string; email: string; phone?: string };
 }
@@ -109,6 +115,9 @@ export interface RegistrationView {
   plan: SubscriptionPlan;
   amount: number;
   currency: string;
+  provider: MobileMoneyProvider;
+  /** What the school calls the network it is paying from, e.g. "Airtel Money". */
+  providerLabel: string;
   msisdn: string;
   /** The gateway's own words, which are what a caller can actually act on. */
   message: string | null;
@@ -138,6 +147,8 @@ async function view(payment: RegistrationPayment): Promise<RegistrationView> {
     plan: payment.plan,
     amount: Number(payment.amount),
     currency: payment.currency,
+    provider: payment.provider,
+    providerLabel: paymentProvider(payment.provider).label,
     msisdn: payment.msisdn,
     message: payment.resultDescription,
     paidAt: payment.paidAt,
@@ -173,6 +184,9 @@ async function noticeFor(payment: RegistrationPayment): Promise<RegistrationNoti
     claimToken: payment.claimToken,
     plan: payment.plan,
     amountText: formatMoney(payment.amount, payment.currency),
+    // Every message a school gets names the network it is paying from, so an
+    // Airtel customer is not told to enter an M-Pesa PIN.
+    providerLabel: paymentProvider(payment.provider).label,
   };
 }
 
@@ -186,7 +200,7 @@ async function noticeFor(payment: RegistrationPayment): Promise<RegistrationNoti
  */
 export async function applyOutcome(
   paymentId: string,
-  outcome: MpesaOutcome,
+  outcome: PaymentOutcome,
 ): Promise<RegistrationPayment> {
   const payment = await prisma.registrationPayment.findUnique({ where: { id: paymentId } });
   if (!payment) throw notFound('Registration payment');
@@ -291,13 +305,20 @@ export async function applyOutcome(
  */
 async function recordGatewayError(
   paymentId: string,
+  provider: PaymentProvider,
   err: unknown,
 ): Promise<RegistrationPayment> {
+  // Every gateway client raises its own error class, and all of them carry the
+  // gateway's code when there was one. Read structurally rather than by class,
+  // so adding a network does not mean editing this.
+  const code = err instanceof Error ? (err as { code?: string | null }).code : null;
+
   return prisma.registrationPayment.update({
     where: { id: paymentId },
     data: {
-      resultCode: err instanceof MpesaError ? (err.code ?? 'GATEWAY_ERROR') : 'GATEWAY_ERROR',
-      resultDescription: err instanceof Error ? err.message : 'Could not reach M-Pesa',
+      resultCode: code ?? 'GATEWAY_ERROR',
+      resultDescription:
+        err instanceof Error ? err.message : `Could not reach ${provider.label}`,
     },
   });
 }
@@ -312,47 +333,53 @@ function after(ms: number): { elapsed: Promise<null>; cancel: () => void } {
 }
 
 /**
- * Pushes the PIN prompt and records whatever came back. Never throws.
+ * Pushes the prompt through the school's chosen gateway and records whatever
+ * came back. Never throws.
  *
- * The push is the one call that waits on a person: the gateway answers it when
- * the customer types their PIN, which is a minute or two after the sign-up
- * form was submitted. So the two waits are separated. The request to the
- * gateway is left open for as long as a person plausibly takes, and its answer
- * is recorded whenever it lands, even though nobody is waiting on this
- * function by then. The form itself waits only `MPESA_PUSH_TIMEOUT_MS` and
- * then gets the record as it stands, which is what sends the customer to the
- * "check your phone" screen.
+ * The two waits are separated, because for M-Pesa they are wildly different
+ * lengths. M-Pesa's push is the one call that waits on a person: the gateway
+ * answers it when the customer types their PIN, a minute or two after the
+ * sign-up form was submitted. So the request to the gateway is left open for
+ * as long as a person plausibly takes, and its answer is recorded whenever it
+ * lands, even though nobody is waiting on this function by then. The form
+ * itself waits only `provider.pushWaitMs` and then gets the record as it
+ * stands, which is what sends the customer to the "check your phone" screen.
  *
- * This is what makes a payment settle without the status query, which a portal
- * application can refuse (`INS-997`, `INS-999`), and without a callback URL,
- * which a development deployment has no way to receive.
+ * For M-Pesa that is what makes a payment settle without the status query,
+ * which a portal application can refuse (`INS-997`, `INS-999`), and without a
+ * callback URL, which a development deployment has no way to receive. Airtel
+ * answers its push at once and says nothing about the money, so there its wait
+ * is simply the request timeout and the status poll does the settling.
  */
 async function push(payment: RegistrationPayment): Promise<RegistrationPayment> {
-  if (!mpesaConfigured) {
+  const provider = paymentProvider(payment.provider);
+
+  if (!provider.configured) {
     return prisma.registrationPayment.update({
       where: { id: payment.id },
       data: {
         resultCode: 'NOT_CONFIGURED',
         resultDescription:
-          'M-Pesa is not configured on this deployment, so no payment prompt was sent.',
+          `${provider.label} is not configured on this deployment, so no payment prompt was sent.`,
       },
     });
   }
 
   // Deliberately not awaited here: the chain below outlives the HTTP request
   // that started it. Every path settles, so this cannot reject unobserved.
-  const settled = c2bPayment({
-    amount: Number(payment.amount),
-    currency: payment.currency,
-    msisdn: payment.msisdn,
-    reference: payment.reference,
-    description: `${payment.plan} registration`,
-  })
+  const settled = provider
+    .push({
+      amount: Number(payment.amount),
+      currency: payment.currency,
+      msisdn: payment.msisdn,
+      reference: payment.reference,
+      description: `${payment.plan} registration`,
+    })
     .then((outcome) => applyOutcome(payment.id, outcome))
-    .catch((err: unknown) => recordGatewayError(payment.id, err))
+    .catch((err: unknown) => recordGatewayError(payment.id, provider, err))
     .catch(() => null);
 
-  const waited = after(env.MPESA_PUSH_TIMEOUT_MS);
+  const waited = after(provider.pushWaitMs);
   try {
     const answered = await Promise.race([settled, waited.elapsed]);
     return answered ?? prisma.registrationPayment.findUniqueOrThrow({ where: { id: payment.id } });
@@ -370,6 +397,16 @@ async function push(payment: RegistrationPayment): Promise<RegistrationPayment> 
  * platform staff can reach the application with it.
  */
 export async function registerSchool(input: RegisterSchoolInput): Promise<RegistrationView> {
+  // Refused here rather than silently downgraded to M-Pesa: a school that
+  // picked Airtel has an Airtel number in the box, and pushing that to
+  // Vodacom's gateway is a payment that cannot work and an error that explains
+  // nothing.
+  if (!SELF_SERVICE_PROVIDERS.includes(input.provider)) {
+    throw badRequest(`${input.provider} cannot be used to pay a registration fee`, {
+      field: 'provider',
+    });
+  }
+
   const msisdn = normalizeMsisdn(input.msisdn);
   const code = input.code.toUpperCase();
   const adminEmail = input.admin.email.trim().toLowerCase();
@@ -458,6 +495,7 @@ export async function registerSchool(input: RegisterSchoolInput): Promise<Regist
         plan: input.plan,
         amount: money(amount),
         currency: 'TZS',
+        provider: input.provider,
         msisdn,
         reference: paymentReference(code),
         claimToken: randomToken(),
@@ -508,9 +546,10 @@ export async function registrationStatus(claimToken: string): Promise<Registrati
     payment.status === PaymentStatus.FAILED;
   const old = Date.now() - payment.createdAt.getTime() > RECONCILE_AFTER_MS;
 
-  if (!settled && old && mpesaConfigured) {
+  if (!settled && old && providerConfigured(payment.provider)) {
     try {
-      payment = await applyOutcome(payment.id, await queryStatus(payment.reference));
+      const provider = paymentProvider(payment.provider);
+      payment = await applyOutcome(payment.id, await provider.queryStatus(payment.reference));
     } catch {
       // A gateway that will not answer leaves the record as it is; the page
       // polls again.
@@ -647,30 +686,26 @@ export async function expireStaleRegistrations(
  * carries a reference we issued; the shared secret is checked by the route
  * before this is reached. It can only ever move a payment forward, and the
  * amount is never read from the callback — it is whatever we priced.
+ *
+ * Each gateway reads its own body, through its provider: M-Pesa's `output_*`
+ * response codes and Airtel's `status_code` mean different things, and one
+ * endpoint guessing between the two would eventually guess wrong about
+ * somebody's money. The provider is also checked against the payment, so a
+ * callback posted to the wrong endpoint settles nothing.
  */
-export async function confirmFromCallback(payload: {
-  reference: string;
-  resultCode?: string;
-  resultDescription?: string;
-  transactionId?: string;
-  conversationId?: string;
-}): Promise<{ matched: boolean; status?: PaymentStatus }> {
-  const payment = await prisma.registrationPayment.findUnique({
-    where: { reference: payload.reference },
-  });
+export async function confirmFromCallback(
+  provider: MobileMoneyProvider,
+  body: Record<string, unknown>,
+): Promise<{ matched: boolean; status?: PaymentStatus }> {
+  const { reference, outcome } = paymentProvider(provider).outcomeFromCallback(body);
+  if (!reference) return { matched: false };
+
+  const payment = await prisma.registrationPayment.findUnique({ where: { reference } });
 
   // An unknown reference is not an error worth telling the caller about: a
   // gateway retrying against the wrong deployment would learn which references
-  // exist here.
-  if (!payment) return { matched: false };
-
-  const outcome: MpesaOutcome = {
-    state: stateForCode(payload.resultCode),
-    code: payload.resultCode ?? null,
-    description: payload.resultDescription ?? null,
-    transactionId: payload.transactionId ?? null,
-    conversationId: payload.conversationId ?? null,
-  };
+  // exist here. The same goes for one belonging to the other network.
+  if (!payment || payment.provider !== provider) return { matched: false };
 
   const updated = await applyOutcome(payment.id, outcome);
   return { matched: true, status: updated.status };

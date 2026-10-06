@@ -190,6 +190,44 @@ const schema = z.object({
    * charged can never come from the browser. A trial costs nothing and so
    * passes the gate without a payment at all.
    */
+  /**
+   * Airtel Money Tanzania, the second network a school may pay the
+   * registration fee from.
+   *
+   * Airtel Africa's Open API is nothing like M-Pesa's: the credentials are an
+   * OAuth2 client id and secret rather than a key pair, the collection push is
+   * answered at once rather than when the customer types their PIN, and the
+   * money's fate is read from a transaction status (`TS`/`TF`/`TIP`/`TA`)
+   * rather than a response code. Only the shape registration sees is shared.
+   *
+   * `sandbox` is the default for the same reason as M-Pesa's: a
+   * half-configured deployment must not be able to take real money.
+   */
+  AIRTEL_ENV: z.enum(['sandbox', 'production']).default('sandbox'),
+  /** Portal -> your app -> Client ID. */
+  AIRTEL_CLIENT_ID: z.string().optional(),
+  AIRTEL_CLIENT_SECRET: z.string().optional(),
+  /** The market the collection is made in. Tanzania is `TZ`/`TZS`. */
+  AIRTEL_COUNTRY: z.string().default('TZ'),
+  AIRTEL_CURRENCY: z.string().default('TZS'),
+  /** Overrides the endpoint derived from AIRTEL_ENV — a proxy, or a stub in testing. */
+  AIRTEL_BASE_URL: optionalUrl(),
+  /**
+   * Shared secret the Airtel callback must present, for the same reason
+   * MPESA_CALLBACK_SECRET exists: the callback arrives unauthenticated.
+   */
+  AIRTEL_CALLBACK_SECRET: z.string().optional(),
+  /**
+   * How long any one Airtel call may take.
+   *
+   * There is no equivalent of MPESA_PUSH_WAIT_MS here, and that is the whole
+   * difference between the two gateways: Airtel answers the push as soon as it
+   * has queued the prompt, so nothing is gained by holding the request open
+   * while the customer finds their phone. The status poll from the sign-up
+   * page is what settles the payment.
+   */
+  AIRTEL_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(15_000),
+
   MPESA_REGISTRATION_FEE_BASIC: z.coerce.number().int().min(0).default(150_000),
   MPESA_REGISTRATION_FEE_STANDARD: z.coerce.number().int().min(0).default(450_000),
   MPESA_REGISTRATION_FEE_PREMIUM: z.coerce.number().int().min(0).default(950_000),
@@ -344,6 +382,23 @@ export const s3Endpoint = (): string | null => {
 export const mpesaConfigured = Boolean(
   env.MPESA_API_KEY && env.MPESA_PUBLIC_KEY && env.MPESA_SERVICE_PROVIDER_CODE,
 );
+
+/**
+ * Airtel Money needs an OAuth2 client before the app offers to take money
+ * through it. Same rule as `mpesaConfigured`: a half-filled set is
+ * unconfigured, and the provider is simply not offered.
+ */
+export const airtelConfigured = Boolean(env.AIRTEL_CLIENT_ID && env.AIRTEL_CLIENT_SECRET);
+
+/** The Airtel Open API root for the configured environment, with a trailing slash. */
+export const airtelBaseUrl = (): string => {
+  const base =
+    env.AIRTEL_BASE_URL ??
+    (env.AIRTEL_ENV === 'production'
+      ? 'https://openapi.airtel.africa'
+      : 'https://openapiuat.airtel.africa');
+  return base.replace(/\/+$/, '') + '/';
+};
 
 /** The gateway root for the configured market, with a trailing slash. */
 export const mpesaBaseUrl = (): string => {
