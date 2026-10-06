@@ -240,6 +240,11 @@ function PaymentStatus({ claimToken }: { claimToken: string }) {
     // Open payments are polled; a settled one stops asking.
     refetchInterval: (query) =>
       query.state.data && query.state.data.status === 'PENDING' ? 4000 : false,
+    // Paying means picking up the handset, which blurs this tab — and polling
+    // pauses on a blurred tab by default, so the screen would sit on "check
+    // your phone" through the one moment it is waiting for and only catch up
+    // when the customer came back to it.
+    refetchIntervalInBackground: true,
   });
 
   const retry = useMutation({
